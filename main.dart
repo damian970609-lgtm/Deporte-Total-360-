@@ -21,8 +21,7 @@ const String streamUrl =
     'https://lbgo.bozztv.com/ssh101/ssh101/deportetotal360/playlist.m3u8';
 const String whatsappUrl =
     'https://wa.me/5927214741?text=Hola%2C%20contacto%20con%20DEPORTE%20TOTAL%20360';
-/// Cambia este enlace cuando hayas creado tu canal.
-const String telegramUrl = 'https://t.me/';
+const String telegramUrl = 'https://t.me/deportetotal360';
 
 Future<void> openUrl(String value) async {
   final uri = Uri.tryParse(value);
@@ -248,17 +247,24 @@ class BrandHero extends StatelessWidget {
       ),
       child: Column(
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Image.asset(
-              'assets/images/logo.png',
-              height: 235,
-              width: double.infinity,
-              fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => const Icon(
+          Container(
+            height: 235,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF0A234B), Color(0xFF1A0F44), Color(0xFF0A1A31)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              border: Border.all(color: cyan.withValues(alpha: .7)),
+            ),
+            child: const Center(
+              child: Icon(
                 Icons.emoji_events_rounded,
                 size: 90,
                 color: yellow,
+                shadows: [Shadow(color: pink, blurRadius: 18)],
               ),
             ),
           ),
@@ -399,14 +405,31 @@ class FeatureTile extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 34, color: color,
-                shadows: [Shadow(color: color, blurRadius: 12)]),
+              Icon(
+                icon,
+                size: 34,
+                color: color,
+                shadows: [Shadow(color: color, blurRadius: 12)],
+              ),
               const SizedBox(height: 9),
-              Text(title, textAlign: TextAlign.center,
-                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 11)),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 11,
+                ),
+              ),
               const SizedBox(height: 4),
-              Text(subtitle, textAlign: TextAlign.center,
-                style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 9)),
+              Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 9,
+                ),
+              ),
             ],
           ),
         ),
@@ -498,6 +521,7 @@ class SportsBackdrop extends StatelessWidget {
 
 class LiveScreen extends StatefulWidget {
   const LiveScreen({super.key});
+
   @override
   State<LiveScreen> createState() => _LiveScreenState();
 }
@@ -525,6 +549,7 @@ class _LiveScreenState extends State<LiveScreen> {
 
     final player = VideoPlayerController.networkUrl(Uri.parse(streamUrl));
     _player = player;
+
     try {
       await player.initialize();
       if (!mounted || _player != player) {
@@ -551,18 +576,27 @@ class _LiveScreenState extends State<LiveScreen> {
   @override
   Widget build(BuildContext context) {
     final p = _player;
-    final offline = !_loading &&
-        (_error != null || p == null || !p.value.isInitialized);
+    final offline =
+        !_loading && (_error != null || p == null || !p.value.isInitialized);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('TRANSMISIONES EN VIVO',
-          style: TextStyle(color: cyan, fontWeight: FontWeight.w900, fontSize: 15)),
+        title: const Text(
+          'TRANSMISIONES EN VIVO',
+          style: TextStyle(
+            color: cyan,
+            fontWeight: FontWeight.w900,
+            fontSize: 15,
+          ),
+        ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const SectionTitle(title: 'CANAL EN VIVO DE DEPORTE TOTAL 360°', color: pink),
+          const SectionTitle(
+            title: 'CANAL EN VIVO DE DEPORTE TOTAL 360°',
+            color: pink,
+          ),
           const SizedBox(height: 14),
           ClipRRect(
             borderRadius: BorderRadius.circular(18),
@@ -594,7 +628,9 @@ class _LiveScreenState extends State<LiveScreen> {
                                   });
                                 },
                                 iconSize: 38,
-                                icon: Icon(p.value.isPlaying ? Icons.pause : Icons.play_arrow),
+                                icon: Icon(
+                                  p.value.isPlaying ? Icons.pause : Icons.play_arrow,
+                                ),
                               ),
                             ],
                           ),
@@ -603,8 +639,11 @@ class _LiveScreenState extends State<LiveScreen> {
           ),
           const SizedBox(height: 14),
           if (offline) ...[
-            Text(_error ?? 'La señal está fuera de línea.',
-              textAlign: TextAlign.center, style: const TextStyle(color: muted)),
+            Text(
+              _error ?? 'La señal está fuera de línea.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: muted),
+            ),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: _startPlayer,
@@ -612,8 +651,11 @@ class _LiveScreenState extends State<LiveScreen> {
               label: const Text('RECARGAR SEÑAL'),
             ),
           ] else
-            const Text('Selecciona reproducir para iniciar la transmisión.',
-              textAlign: TextAlign.center, style: TextStyle(color: muted)),
+            const Text(
+              'Selecciona reproducir para iniciar la transmisión.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: muted),
+            ),
           const SizedBox(height: 18),
           FeatureTile(
             icon: Icons.calendar_month_rounded,
@@ -632,6 +674,7 @@ class _LiveScreenState extends State<LiveScreen> {
 
 class OfflinePanel extends StatelessWidget {
   const OfflinePanel({super.key});
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -647,15 +690,27 @@ class OfflinePanel extends StatelessWidget {
         children: [
           Icon(Icons.sports_soccer_rounded, color: cyan, size: 36),
           SizedBox(height: 8),
-          Text('DEPORTE TOTAL 360°',
+          Text(
+            'DEPORTE TOTAL 360°',
             textAlign: TextAlign.center,
-            style: TextStyle(color: cyan, fontWeight: FontWeight.w900, fontSize: 18)),
+            style: TextStyle(
+              color: cyan,
+              fontWeight: FontWeight.w900,
+              fontSize: 18,
+            ),
+          ),
           SizedBox(height: 8),
           Icon(Icons.portable_wifi_off_rounded, color: pink, size: 36),
           SizedBox(height: 8),
           Text('CANAL EN VIVO', style: TextStyle(fontWeight: FontWeight.w900)),
-          Text('FUERA DE LÍNEA',
-            style: TextStyle(color: pink, fontWeight: FontWeight.w900, fontSize: 18)),
+          Text(
+            'FUERA DE LÍNEA',
+            style: TextStyle(
+              color: pink,
+              fontWeight: FontWeight.w900,
+              fontSize: 18,
+            ),
+          ),
         ],
       ),
     );
@@ -664,6 +719,7 @@ class OfflinePanel extends StatelessWidget {
 
 class DonationsScreen extends StatelessWidget {
   const DonationsScreen({super.key});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -675,8 +731,14 @@ class DonationsScreen extends StatelessWidget {
           children: [
             const Icon(Icons.favorite_rounded, color: pink, size: 76),
             const SizedBox(height: 18),
-            const Text('APOYA EL PROYECTO',
-              style: TextStyle(color: yellow, fontSize: 22, fontWeight: FontWeight.w900)),
+            const Text(
+              'APOYA EL PROYECTO',
+              style: TextStyle(
+                color: yellow,
+                fontSize: 22,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
             const SizedBox(height: 12),
             const Text(
               'Gracias por apoyar DEPORTE TOTAL 360°. '
@@ -699,6 +761,7 @@ class DonationsScreen extends StatelessWidget {
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -721,7 +784,7 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.send_rounded, color: Color(0xFF28A8E9)),
             title: const Text('Canal de Telegram'),
-            subtitle: const Text('Enlace provisional hasta crear el canal'),
+            subtitle: const Text('Enlace oficial del canal'),
             trailing: const Icon(Icons.open_in_new),
             onTap: () => openUrl(telegramUrl),
           ),
