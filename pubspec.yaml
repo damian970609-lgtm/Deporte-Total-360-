@@ -1,3 +1,6 @@
+2) pubspec.yaml
+
+```yaml
 name: deporte_total_360
 description: DEPORTE TOTAL 360
 publish_to: "none"
@@ -20,16 +23,6 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/images/logo.png
-    - assets/images/home_reference.png
-    - assets/images/app_icon.png
-
-flutter_launcher_icons:
-  android: true
-  image_path: "assets/images/app_icon.png"
-  min_sdk_android: 21
