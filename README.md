@@ -1,27 +1,22 @@
-# DEPORTE TOTAL 360°
+# Deporte Total 360 API
 
-Aplicación móvil deportiva para seguir transmisiones en vivo, agenda de partidos y contenido relacionado con el deporte.
+Cloudflare Worker que sirve como intermediario seguro entre la aplicación
+Deporte Total 360 y API-Football.
 
-## Descripción
+## Rutas
 
-DEPORTE TOTAL 360° es una app enfocada en:
-- transmisiones en vivo
-- agenda deportiva
-- acceso a Telegram
-- contacto por WhatsApp
-- diseño moderno para aficionados al deporte
+- GET /health
+- GET /api/fixtures?date=YYYY-MM-DD
+- GET /api/live
+- GET /api/leagues?country=England&season=2026
+- GET /api/standings?league=39&season=2026
 
-## Requisitos
+## Configuración
 
-- Flutter SDK 3.5 o superior
-- Android Studio o VS Code con Flutter instalado
-- Emulador o dispositivo Android
+Configurar APIFOOTBALL_KEY como secreto del Worker en Cloudflare.
 
-## Instalación
+No incluir la clave en la aplicación móvil ni en el repositorio.
 
-1. Clona el repositorio.
-2. Entra a la carpeta del proyecto.
-3. Ejecuta:
+## Despliegue
 
-```bash
-flutter pub get
+El despliegue se realiza mediante GitHub Actions y Cloudflare Wrangler.
