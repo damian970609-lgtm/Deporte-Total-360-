@@ -33,9 +33,13 @@ jobs:
         with:
           node-version: 22
 
-      - name: Publicar Worker
+      - name: Publicar Worker con llave API-Sports
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+          secrets: |
+            APISPORTS_KEY
+        env:
+          APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
