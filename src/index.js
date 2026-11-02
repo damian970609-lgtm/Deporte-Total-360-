@@ -631,6 +631,15 @@ function sportsCatalog() {
   }));
 }
 
+function cleanChatField(value, maxLength) {
+  // Quita caracteres de control sin alterar tildes, emojis ni alfabetos Unicode.
+  const cleaned = Array.from(value, (character) => {
+    const code = character.codePointAt(0);
+    return code < 32 || code === 127 ? " " : character;
+  }).join("").trim();
+  return Array.from(cleaned).slice(0, maxLength).join("");
+}
+
 const CHAT_MAX_MESSAGES = 120;
 const CHAT_MAX_NAME_LENGTH = 24;
 const CHAT_MAX_TEXT_LENGTH = 500;
@@ -666,16 +675,12 @@ export class PublicChatRoom {
     if (contentLength > 8192) {
       return json({ error: "El mensaje enviado es demasiado grande" }, 413);
     }
-    const contentType = request.headers.get("Content-Type") || "";
-    if (!contentType.toLowerCase().includes("application/json")) {
-      return json({ error: "El chat solo acepta JSON" }, 415);
-    }
-
-    let payload;
-    try {
-      payload = await request.json();
-    } catch {
-      return json({ error: "El mensaje no contiene JSON válido" }, 400);
+     const name = typeof payload?.name === "string"
+      ? cleanChatField(payload.name, CHAT_MAX_NAME_LENGTH)
+      : "";
+    const text = typeof payload?.text === "string"
+      ? cleanChatField(payload.text, CHAT_MAX_TEXT_LENGTH)
+      : "";, 400);
     }
 
     const name = typeof payload?.name === "string"
