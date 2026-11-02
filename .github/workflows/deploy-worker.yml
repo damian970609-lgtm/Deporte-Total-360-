@@ -98,6 +98,30 @@ jobs:
           NODE
             else
               echo "$label: error HTTP $status" >&2
+              node - "$body" "$label" <<'NODE'
+          const fs = require("node:fs");
+          const raw = fs.readFileSync(process.argv[2], "utf8");
+          const label = process.argv[3];
+          try {
+            const payload = JSON.parse(raw);
+            const redact = (value) => {
+              if (Array.isArray(value)) return value.map(redact);
+              if (value && typeof value === "object") {
+                return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+                  key,
+                  /key|token|secret|password|authorization/i.test(key) ? "[REDACTED]" : redact(item)
+                ]));
+              }
+              if (typeof value === "string") {
+                return value.replace(/(api[_-]?sports[_-]?key|authorization|bearer)\\s*[:=]\\s*[^\\s,;]+/ig, "$1=[REDACTED]");
+              }
+              return value;
+            };
+            console.error(label + " respuesta del Worker:", JSON.stringify(redact(payload)).slice(0, 3000));
+          } catch {
+            console.error(label + " respuesta del Worker (texto):", raw.slice(0, 1000));
+          }
+          NODE
               rm -f "$body"
               return 1
             fi
