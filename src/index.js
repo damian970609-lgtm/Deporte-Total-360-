@@ -631,13 +631,12 @@ function sportsCatalog() {
   }));
 }
 
-function cleanChatField(value, maxLength) {
+function cleanChatField(value) {
   // Quita caracteres de control sin alterar tildes, emojis ni alfabetos Unicode.
-  const cleaned = Array.from(value, (character) => {
+  return Array.from(value, (character) => {
     const code = character.codePointAt(0);
     return code < 32 || code === 127 ? " " : character;
   }).join("").trim();
-  return Array.from(cleaned).slice(0, maxLength).join("");
 }
 
 const CHAT_MAX_MESSAGES = 120;
@@ -689,16 +688,16 @@ export class PublicChatRoom {
     }
 
     const name = typeof payload?.name === "string"
-      ? cleanChatField(payload.name, CHAT_MAX_NAME_LENGTH)
+      ? Array.from(cleanChatField(payload.name)).slice(0, CHAT_MAX_NAME_LENGTH).join('')
       : "";
     const text = typeof payload?.text === "string"
-      ? cleanChatField(payload.text, CHAT_MAX_TEXT_LENGTH)
+      ? cleanChatField(payload.text)
       : "";
 
     if (name.length < 2) {
       return json({ error: "Escribe un nombre de al menos 2 caracteres" }, 400);
     }
-    if (!text || text.length > CHAT_MAX_TEXT_LENGTH) {
+    if (!text || Array.from(text).length > CHAT_MAX_TEXT_LENGTH) {
       return json({ error: "El mensaje debe tener entre 1 y 500 caracteres" }, 400);
     }
 
