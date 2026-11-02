@@ -718,6 +718,11 @@ export class PublicChatRoom {
     const text = typeof payload?.text === "string"
       ? cleanChatField(payload.text)
       : "";
+    const language = payload?.language === undefined ? "es" : payload.language;
+
+    if (!new Set(["es", "en", "pt", "fr"]).has(language)) {
+      return json({ error: "El idioma del mensaje debe ser es, en, pt o fr" }, 400);
+    }
 
     if (name.length < 2) {
       return json({ error: "Escribe un nombre de al menos 2 caracteres" }, 400);
@@ -745,6 +750,7 @@ export class PublicChatRoom {
         id: crypto.randomUUID(),
         name,
         text,
+        language,
         createdAt: new Date(now).toISOString()
       };
       messages.push(message);
