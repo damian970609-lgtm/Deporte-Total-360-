@@ -738,7 +738,7 @@ export default {
     }
 
     const incoming = new URL(request.url);
-    const path = incoming.pathname.replace(/\\/+$/, "") || "/";
+    const path = incoming.pathname.replace(/\/+$/, "") || "/";
 
     // Una única sala pública compartida por todos los usuarios de la APK.
     if (path === "/api/chat/messages") {
