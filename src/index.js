@@ -1,6 +1,6 @@
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "X-Content-Type-Options": "nosniff"
@@ -631,10 +631,131 @@ function sportsCatalog() {
   }));
 }
 
+const CHAT_MAX_MESSAGES = 120;
+const CHAT_MAX_NAME_LENGTH = 24;
+const CHAT_MAX_TEXT_LENGTH = 500;
+const CHAT_RATE_LIMIT_MS = 2000;
+
+/**
+ * Sala pública compartida. El historial se conserva en SQLite del Durable Object.
+ * Los nombres son alias públicos, no identidades autenticadas.
+ */
+export class PublicChatRoom {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.writeQueue = Promise.resolve();
+    this.lastMessageAt = new Map();
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname !== "/messages") {
+      return json({ error: "Ruta del chat no encontrada" }, 404);
+    }
+    if (request.method === "OPTIONS") return empty(204);
+    if (request.method === "GET") {
+      const messages = await this.state.storage.get("messages") || [];
+      return json({ messages }, 200, { "Cache-Control": "no-store" });
+    }
+    if (request.method !== "POST") {
+      return json({ error: "Método no permitido" }, 405, { Allow: "GET, POST, OPTIONS" });
+    }
+
+    const contentLength = Number(request.headers.get("Content-Length") || 0);
+    if (contentLength > 8192) {
+      return json({ error: "El mensaje enviado es demasiado grande" }, 413);
+    }
+    const contentType = request.headers.get("Content-Type") || "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return json({ error: "El chat solo acepta JSON" }, 415);
+    }
+
+    let payload;
+    try {
+      payload = await request.json();
+    } catch {
+      return json({ error: "El mensaje no contiene JSON válido" }, 400);
+    }
+
+    const name = typeof payload?.name === "string"
+      ? payload.name.replace(/[\\u0000-\\u001F\\u007F]/g, " ").replace(/\\s+/g, " ").trim().slice(0, CHAT_MAX_NAME_LENGTH)
+      : "";
+    const text = typeof payload?.text === "string"
+      ? payload.text.replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, " ").trim()
+      : "";
+
+    if (name.length < 2) {
+      return json({ error: "Escribe un nombre de al menos 2 caracteres" }, 400);
+    }
+    if (!text || text.length > CHAT_MAX_TEXT_LENGTH) {
+      return json({ error: "El mensaje debe tener entre 1 y 500 caracteres" }, 400);
+    }
+
+    // La IP se usa solo en memoria para limitar spam; no se guarda en mensajes.
+    const clientKey = request.headers.get("CF-Connecting-IP") || "anonymous";
+    const now = Date.now();
+    const previous = this.lastMessageAt.get(clientKey) || 0;
+    if (now - previous < CHAT_RATE_LIMIT_MS) {
+      return json(
+        { error: "Espera un momento antes de enviar otro mensaje" },
+        429,
+        { "Retry-After": "2" }
+      );
+    }
+    this.lastMessageAt.set(clientKey, now);
+
+    const write = this.writeQueue.then(async () => {
+      const messages = await this.state.storage.get("messages") || [];
+      const message = {
+        id: crypto.randomUUID(),
+        name,
+        text,
+        createdAt: new Date(now).toISOString()
+      };
+      messages.push(message);
+      if (messages.length > CHAT_MAX_MESSAGES) {
+        messages.splice(0, messages.length - CHAT_MAX_MESSAGES);
+      }
+      await this.state.storage.put("messages", messages);
+      return message;
+    });
+    this.writeQueue = write.then(() => undefined, () => undefined);
+
+    try {
+      const message = await write;
+      return json({ message }, 201, { "Cache-Control": "no-store" });
+    } catch {
+      return json({ error: "No se pudo guardar el mensaje. Inténtalo de nuevo." }, 500);
+    }
+  }
+}
+
 export default {
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
       return empty(204);
+    }
+
+    const incoming = new URL(request.url);
+    const path = incoming.pathname.replace(/\\/+$/, "") || "/";
+
+    // Una única sala pública compartida por todos los usuarios de la APK.
+    if (path === "/api/chat/messages") {
+      if (request.method !== "GET" && request.method !== "POST") {
+        return json(
+          { error: "Método no permitido" },
+          405,
+          { Allow: "GET, POST, OPTIONS" }
+        );
+      }
+      if (!env.PUBLIC_CHAT_ROOM) {
+        return json({ error: "La sala de chat todavía no está configurada" }, 503);
+      }
+      const roomId = env.PUBLIC_CHAT_ROOM.idFromName("deporte-total-360-public");
+      const room = env.PUBLIC_CHAT_ROOM.get(roomId);
+      const target = new URL("https://public-chat.internal/messages");
+      return room.fetch(new Request(target.toString(), request));
     }
 
     if (request.method !== "GET") {
@@ -644,9 +765,6 @@ export default {
         { Allow: "GET, OPTIONS" }
       );
     }
-
-    const incoming = new URL(request.url);
-    const path = incoming.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/health") {
       return json({
