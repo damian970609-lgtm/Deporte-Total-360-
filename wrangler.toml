@@ -5,3 +5,12 @@ workers_dev = true
 
 [observability]
 enabled = true
+
+
+[[durable_objects.bindings]]
+name = "PUBLIC_CHAT_ROOM"
+class_name = "PublicChatRoom"
+
+[[migrations]]
+tag = "v1-public-chat"
+new_sqlite_classes = ["PublicChatRoom"]

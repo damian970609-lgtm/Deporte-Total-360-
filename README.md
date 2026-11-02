@@ -8,6 +8,8 @@ nunca debe incluirse en el APK ni en el código Flutter.
 
 - `GET /health` — estado del Worker y número de deportes configurados.
 - `GET /api/sports` — catálogo de deportes, identificadores y recursos disponibles.
+- `GET /api/chat/messages` — devuelve los últimos mensajes de la sala pública.
+- `POST /api/chat/messages` — publica un mensaje `{ "name": "Alias", "text": "Mensaje" }` en esa misma sala.
 
 ## Recursos disponibles
 
@@ -58,6 +60,12 @@ vacía no significa que la pantalla se haya detenido: la liga, la temporada o
 el deporte pueden no tener eventos/datos disponibles en ese momento. La
 cobertura y los endpoints dependen de la suscripción habilitada para cada API.
 El Worker conserva respuestas en caché para reducir consultas.
+
+## Chat público
+
+La aplicación usa una única sala compartida implementada con un Durable Object SQLite (`PublicChatRoom`). El historial conserva los últimos 120 mensajes, admite alias de hasta 24 caracteres y mensajes de hasta 500 caracteres, y aplica un límite básico de frecuencia por dirección IP en memoria. Los alias no están autenticados ni verificados; la app advierte a los usuarios que no publiquen datos personales. No se guardan direcciones IP en los mensajes.
+
+El Durable Object está incluido en `wrangler.toml` con una migración SQLite `v1-public-chat`. El despliegue de producción provisiona esa clase al publicar el Worker.
 
 ## Seguridad
 
