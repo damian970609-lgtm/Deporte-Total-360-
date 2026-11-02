@@ -675,19 +675,24 @@ export class PublicChatRoom {
     if (contentLength > 8192) {
       return json({ error: "El mensaje enviado es demasiado grande" }, 413);
     }
-     const name = typeof payload?.name === "string"
+
+    const contentType = request.headers.get("Content-Type") || "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return json({ error: "El chat solo acepta JSON" }, 415);
+    }
+
+    let payload;
+    try {
+      payload = await request.json();
+    } catch {
+      return json({ error: "El mensaje no contiene JSON válido" }, 400);
+    }
+
+    const name = typeof payload?.name === "string"
       ? cleanChatField(payload.name, CHAT_MAX_NAME_LENGTH)
       : "";
     const text = typeof payload?.text === "string"
       ? cleanChatField(payload.text, CHAT_MAX_TEXT_LENGTH)
-      : "";, 400);
-    }
-
-    const name = typeof payload?.name === "string"
-      ? payload.name.replace(/[\\u0000-\\u001F\\u007F]/g, " ").replace(/\\s+/g, " ").trim().slice(0, CHAT_MAX_NAME_LENGTH)
-      : "";
-    const text = typeof payload?.text === "string"
-      ? payload.text.replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, " ").trim()
       : "";
 
     if (name.length < 2) {
