@@ -478,6 +478,21 @@ function validateRouteQuery(resource, params, config) {
   return null;
 }
 
+function providerRateLimitError(errors) {
+  const message = typeof errors === "string"
+    ? errors
+    : JSON.stringify(errors ?? "");
+  return /too many requests|rate.?limit|requests? per minute/i.test(message);
+}
+
+function rateLimitResponse(details = null) {
+  return json({
+    error: "API-Sports alcanzó el límite de solicitudes por minuto. Espera al menos 60 segundos antes de volver a intentarlo.",
+    retry_after_seconds: 60,
+    ...(details == null ? {} : { details })
+  }, 429, { "Retry-After": "60", "Cache-Control": "no-store" });
+}
+
 async function cacheMatch(cache, key) {
   if (!cache || typeof cache.match !== "function") return null;
 
@@ -576,6 +591,13 @@ async function proxyToProvider(request, env, base, config, resource) {
 
     const body = await upstream.text();
 
+    if (upstream.status === 429) {
+      return rateLimitResponse({
+        provider_status: upstream.status,
+        message: "El proveedor rechazó temporalmente la solicitud por límite de consultas."
+      });
+    }
+
     if (!upstream.ok) {
       return json({
         error: "Error del proveedor deportivo",
@@ -600,6 +622,9 @@ async function proxyToProvider(request, env, base, config, resource) {
     }
 
     if (providerErrors(parsed.errors)) {
+      if (providerRateLimitError(parsed.errors)) {
+        return rateLimitResponse(parsed.errors);
+      }
       return json({
         error: "El proveedor devolvió errores",
         details: parsed.errors
