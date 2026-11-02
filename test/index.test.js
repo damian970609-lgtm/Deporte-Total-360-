@@ -148,6 +148,41 @@ test("pasa respuesta 204 del proveedor", async () => {
   assert.equal(response.status, 204);
 });
 
+test("convierte el límite por minuto de API-Sports en HTTP 429", async () => {
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      response: [],
+      errors: {
+        rateLimit: "Too many requests. You have exceeded the limit of requests per minute."
+      }
+    }),
+    { status: 200 }
+  );
+
+  const response = await worker.fetch(
+    request("/api/fixtures?date=2026-11-02"),
+    { APISPORTS_KEY: "test" }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Retry-After"), "60");
+  assert.equal(body.retry_after_seconds, 60);
+  assert.match(body.error, /60 segundos/);
+});
+
+test("convierte HTTP 429 del proveedor en respuesta reintentable", async () => {
+  globalThis.fetch = async () => new Response("rate limited", { status: 429 });
+
+  const response = await worker.fetch(
+    request("/api/fixtures?date=2026-11-02"),
+    { APISPORTS_KEY: "test" }
+  );
+
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Retry-After"), "60");
+});
+
 test("errores del proveedor producen 502", async () => {
   globalThis.fetch = async () => new Response(
     JSON.stringify({ errors: { token: "invalid" } }),
