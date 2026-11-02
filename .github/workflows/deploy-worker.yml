@@ -47,3 +47,21 @@ jobs:
             APISPORTS_KEY
         env:
           APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+
+      - name: Verificar API y sala pública desplegadas
+        run: |
+          set -Eeuo pipefail
+          BASE="https://deporte-total-360-api.damian970609.workers.dev"
+          HEALTH="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/health")"
+          CHAT="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/chat/messages")"
+          node - "$HEALTH" "$CHAT" <<'NODE'
+          const health = JSON.parse(process.argv[2]);
+          const chat = JSON.parse(process.argv[3]);
+          if (health.status !== "online") {
+            throw new Error("El endpoint /health no confirmó que el Worker está online.");
+          }
+          if (!Array.isArray(chat.messages)) {
+            throw new Error("La sala pública no devolvió una lista de mensajes.");
+          }
+          console.log("Worker online; sala pública accesible; mensajes:", chat.messages.length);
+          NODE
