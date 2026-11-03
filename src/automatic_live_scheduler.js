@@ -431,6 +431,38 @@ function walkStructuredData(value, output, depth = 0) {
   }
 }
 
+function parseEmbeddedJson(scriptBody) {
+  const source = String(scriptBody || "").trim().replace(/;\\s*$/, "");
+  const first = source.search(/[\\[{]/);
+  if (first < 0) return null;
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = first; index < source.length; index++) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{") stack.push("}");
+    else if (character === "[") stack.push("]");
+    else if (character === "}" || character === "]") {
+      if (stack.pop() !== character) return null;
+      if (stack.length === 0) {
+        try { return JSON.parse(source.slice(first, index + 1)); }
+        catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
 function extractMarcaStructuredEvents(html) {
   const found = [];
   for (const match of String(html).matchAll(
@@ -438,9 +470,22 @@ function extractMarcaStructuredEvents(html) {
   )) {
     try { walkStructuredData(JSON.parse(decodeEntities(match[1])), found); } catch { /* JSON-LD inválido */ }
   }
-  // Varios CMS publican la agenda dentro de objetos JavaScript serializados.
+  // Algunos CMS publican el calendario como JSON de aplicación o como
+  // estado hidratado (por ejemplo __NEXT_DATA__), no solo como JSON-LD.
   for (const match of String(html).matchAll(
-    /<script\b[^>]*>([\s\S]*?)<\/script>/gi
+    /<script\\b([^>]*)>([\\s\\S]*?)<\\/script>/gi
+  )) {
+    const body = match[2] || "";
+    if (body.length > 2 * 1024 * 1024 ||
+        !/(startDate|startsAt|start_time|homeTeam|awayTeam|participants|competitors|performer)/i.test(body)) {
+      continue;
+    }
+    const embedded = parseEmbeddedJson(body);
+    if (embedded) walkStructuredData(embedded, found);
+  }
+  // Respaldo para pequeños objetos JavaScript serializados.
+  for (const match of String(html).matchAll(
+    /<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi
   )) {
     const body = match[1];
     if (!/(startDate|startsAt|start_time|homeTeam|awayTeam)/i.test(body)) continue;
