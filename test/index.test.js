@@ -223,6 +223,58 @@ test("la agenda acepta eventos individuales sin formato equipo contra equipo", (
   assert.equal(events[0].participants[0].imageUrl, "https://img.example/athlete.jpg");
 });
 
+
+test("lee los eventos, logos y participantes desde JSON incrustado del CMS", () => {
+  const payload = {
+    pageProps: {
+      schedule: [
+        {
+          "@type": "SportsEvent",
+          name: "Equipo Norte vs Equipo Sur",
+          sport: "Football",
+          startDate: "2026-11-03T19:30:00Z",
+          homeTeam: {
+            "@type": "SportsTeam",
+            name: "Equipo Norte",
+            logo: "https://img.example/norte.png"
+          },
+          awayTeam: {
+            "@type": "SportsTeam",
+            name: "Equipo Sur",
+            logo: "https://img.example/sur.png"
+          }
+        },
+        {
+          "@type": "SportsEvent",
+          name: "Final tenis individual",
+          sport: "Tennis",
+          startDate: "2026-11-03T20:30:00Z",
+          performers: [
+            {
+              "@type": "Person",
+              name: "Deportista Uno",
+              image: "https://img.example/uno.png",
+              nationality: "España"
+            }
+          ]
+        }
+      ]
+    }
+  };
+  const html = '<script id="__NEXT_DATA__" type="application/json">' +
+    JSON.stringify(payload) + '</script>';
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+
+  assert.equal(events.length, 2);
+  const match = events.find(event => event.homeTeam === "Equipo Norte");
+  const individual = events.find(event => event.sport === "Tenis");
+  assert.equal(match.homeTeamLogo, "https://img.example/norte.png");
+  assert.equal(match.awayTeamLogo, "https://img.example/sur.png");
+  assert.equal(individual.participants[0].name, "Deportista Uno");
+  assert.equal(individual.participants[0].imageUrl, "https://img.example/uno.png");
+  assert.equal(individual.participants[0].country, "España");
+});
+
 test("mantiene en agenda un evento que comenzó hace dos horas y sigue en curso", () => {
   const html = `<script type="application/ld+json">
     {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
