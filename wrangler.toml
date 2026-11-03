@@ -14,3 +14,14 @@ class_name = "PublicChatRoom"
 [[migrations]]
 tag = "v1-public-chat"
 new_sqlite_classes = ["PublicChatRoom"]
+
+[[durable_objects.bindings]]
+name = "AUTOMATIC_LIVE_SCHEDULE"
+class_name = "AutomaticLiveSchedule"
+
+[[migrations]]
+tag = "v2-automatic-live-schedule"
+new_sqlite_classes = ["AutomaticLiveSchedule"]
+
+[triggers]
+crons = ["* * * * *"]
