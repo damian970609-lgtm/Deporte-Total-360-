@@ -1,3 +1,6 @@
+import { AutomaticLiveSchedule } from "./automatic_live_scheduler.js";
+export { AutomaticLiveSchedule };
+
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -921,6 +924,18 @@ export default {
       );
     }
 
+    if (path === "/api/live/auto/schedule") {
+      if (!env.AUTOMATIC_LIVE_SCHEDULE) {
+        return json({ error: "El planificador automático todavía no está configurado." }, 503);
+      }
+      const id = env.AUTOMATIC_LIVE_SCHEDULE.idFromName("deporte-total-360-global");
+      const scheduler = env.AUTOMATIC_LIVE_SCHEDULE.get(id);
+      return scheduler.fetch(new Request(
+        "https://automatic-live.internal/snapshot",
+        { method: "GET" }
+      ));
+    }
+
     if (path === "/api/live/sources") {
       return liveSourcesResponse(request, env);
     }
@@ -933,7 +948,8 @@ export default {
           env.APISPORTS_KEY || env.APIFOOTBALL_KEY
         ),
         sports: Object.keys(SPORTS).length,
-        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON)
+        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON),
+        automatic_live_scheduler_configured: Boolean(env.AUTOMATIC_LIVE_SCHEDULE)
       });
     }
 
@@ -992,5 +1008,28 @@ export default {
       config,
       resource
     );
+  },
+
+  async scheduled(controller, env, ctx) {
+    if (!env.AUTOMATIC_LIVE_SCHEDULE) {
+      throw new Error("Falta el binding AUTOMATIC_LIVE_SCHEDULE.");
+    }
+    const id = env.AUTOMATIC_LIVE_SCHEDULE.idFromName("deporte-total-360-global");
+    const scheduler = env.AUTOMATIC_LIVE_SCHEDULE.get(id);
+    const response = await scheduler.fetch(new Request(
+      "https://automatic-live.internal/refresh",
+      { method: "POST" }
+    ));
+    if (!response.ok) {
+      throw new Error("Falló la actualización central de agenda: HTTP " + response.status);
+    }
+    const result = await response.json();
+    console.log("Automatic live schedule:", {
+      cron: controller?.cron || "manual",
+      status: result.status,
+      events: result.events?.length || 0,
+      updatedAt: result.updatedAt || null,
+      sourceError: result.sourceError || null
+    });
   }
 };
