@@ -973,6 +973,12 @@ export class AutomaticLiveSchedule {
       if (token.length < 100 || token.length > 4096) {
         return json({ error: "Token FCM no válido" }, 400);
       }
+      const devices = await this.state.storage.get("device_tokens") || {};
+      if (url.pathname === "/device/unregister") {
+        delete devices[token];
+        await this.state.storage.put("device_tokens", devices);
+        return json({ registered: false });
+      }
       const clientKey = request.headers.get("CF-Connecting-IP") || "anonymous";
       const now = Date.now();
       const previous = this.deviceRegistrationAt.get(clientKey) || 0;
@@ -980,12 +986,6 @@ export class AutomaticLiveSchedule {
         return json({ error: "Espera antes de volver a registrar el dispositivo" }, 429);
       }
       this.deviceRegistrationAt.set(clientKey, now);
-      const devices = await this.state.storage.get("device_tokens") || {};
-      if (url.pathname === "/device/unregister") {
-        delete devices[token];
-        await this.state.storage.put("device_tokens", devices);
-        return json({ registered: false });
-      }
       if (Object.keys(devices).length >= 5000 && !devices[token]) {
         return json({ error: "Se alcanzó el límite de dispositivos registrados" }, 429);
       }
