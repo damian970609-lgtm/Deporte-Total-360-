@@ -255,24 +255,34 @@ function eventSport(event) {
   return textValue(event.sport || event.discipline || event.category) || "Deporte";
 }
 
-function safeImageUrl(value) {
+function safeImageUrl(value, depth = 0) {
+  if (depth > 5 || value == null) return "";
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = safeImageUrl(item);
+      const found = safeImageUrl(item, depth + 1);
       if (found) return found;
     }
     return "";
   }
-  const candidate = typeof value === "string"
-    ? value
-    : value && typeof value === "object"
-      ? value.url || value.contentUrl || value.thumbnailUrl || value.src || value.image
-      : "";
+  if (value && typeof value === "object") {
+    for (const key of [
+      "url", "contentUrl", "thumbnailUrl", "src", "image",
+      "logo", "crest", "badge", "photo", "picture", "avatar", "href"
+    ]) {
+      const found = safeImageUrl(value[key], depth + 1);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof value !== "string") return "";
+  const candidate = value.trim();
+  if (!candidate || candidate.toLowerCase().startsWith("data:")) return "";
   try {
-    const url = new URL(String(candidate || "").trim());
-    return url.protocol === "https:" && !url.username && !url.password
-      ? url.toString()
-      : "";
+    // MARCA suele publicar imágenes con URL //cdn... o rutas /images/...
+    // Resuélvelas contra el dominio de la propia agenda.
+    const url = new URL(candidate, MARCA_AGENDA_URL);
+    if (url.protocol !== "https:" || url.username || url.password) return "";
+    return url.toString();
   } catch {
     return "";
   }
@@ -292,7 +302,10 @@ function participantInfo(value, role = "") {
   if (!name) return null;
   return {
     name: name.slice(0, 100),
-    imageUrl: safeImageUrl(value.imageUrl || value.logo || value.image || value.thumbnailUrl || value.photo || value.picture),
+    imageUrl: safeImageUrl(
+      value.imageUrl || value.logo || value.crest || value.badge ||
+      value.image || value.thumbnailUrl || value.photo || value.picture || value.avatar
+    ),
     country: textValue(value.nationality || value.country || value.affiliation).slice(0, 60),
     role: textValue(value.role || role)
   };
@@ -336,18 +349,24 @@ function unwrapEventObject(item) {
   const startsAt = parseDateTime(startValue);
   if (!name || !startsAt) return null;
 
-  const homeRaw = item.homeTeam || item.home || item.teamHome;
-  const awayRaw = item.awayTeam || item.away || item.teamAway;
+  const homeRaw = item.homeTeam || item.home || item.teamHome ||
+    item.localTeam || item.team1 || item.home_team;
+  const awayRaw = item.awayTeam || item.away || item.teamAway ||
+    item.visitorTeam || item.away_team || item.team2;
   const teamSplit = splitTeams(name);
   const homeTeam = teamName(homeRaw) || teamSplit.homeTeam;
   const awayTeam = teamName(awayRaw) || teamSplit.awayTeam;
   let homeTeamLogo = safeImageUrl(
-    homeRaw?.logo || homeRaw?.image || homeRaw?.photo ||
-    item.homeTeamLogo || item.homeLogo
+    homeRaw?.logo || homeRaw?.logoUrl || homeRaw?.crest ||
+    homeRaw?.badge || homeRaw?.image || homeRaw?.photo ||
+    item.homeTeamLogo || item.homeTeamLogoUrl || item.homeLogo ||
+    item.localTeamLogo || item.homeTeamImage
   );
   let awayTeamLogo = safeImageUrl(
-    awayRaw?.logo || awayRaw?.image || awayRaw?.photo ||
-    item.awayTeamLogo || item.awayLogo
+    awayRaw?.logo || awayRaw?.logoUrl || awayRaw?.crest ||
+    awayRaw?.badge || awayRaw?.image || awayRaw?.photo ||
+    item.awayTeamLogo || item.awayTeamLogoUrl || item.awayLogo ||
+    item.visitorTeamLogo || item.awayTeamImage
   );
 
   const participantSource = item.participants || item.competitors ||
@@ -408,7 +427,10 @@ function unwrapEventObject(item) {
     homeTeamLogo,
     awayTeamLogo,
     participants: uniqueParticipants,
-    imageUrl: safeImageUrl(item.image || item.thumbnailUrl || item.thumbnail || item.photo),
+    imageUrl: safeImageUrl(
+      item.image || item.imageUrl || item.thumbnailUrl || item.thumbnail ||
+      item.photo || item.picture || item.poster
+    ),
     venue: textValue(location).slice(0, 120),
     startsAt,
     endsAt: endsAt && endsAt > startsAt ? endsAt : startsAt + duration * 60 * 60 * 1000,
