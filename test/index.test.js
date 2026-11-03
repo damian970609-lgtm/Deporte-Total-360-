@@ -113,6 +113,28 @@ test("catálogo en vivo filtra por deporte, fecha y URL multimedia directa", asy
   assert.equal(body.sources[0].url, "https://media.example/live.m3u8");
 });
 
+
+test("catálogo usa el día de Guyana al filtrar marcas UTC", async () => {
+  const catalog = [{
+    id: "football-128-local-date",
+    eventId: "128",
+    sport: "football",
+    name: "Señal autorizada",
+    url: "https://media.example/local-date.m3u8",
+    startsAt: "2026-11-04T02:00:00Z"
+  }];
+
+  const response = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-03&to=2026-11-03&timezone=America%2FGuyana"),
+    { LIVE_STREAM_CATALOG_JSON: JSON.stringify(catalog) }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.count, 1);
+  assert.equal(body.sources[0].eventId, "128");
+});
+
 test("catálogo en vivo rechaza JSON mal formado", async () => {
   const response = await worker.fetch(
     request("/api/live/sources"),
