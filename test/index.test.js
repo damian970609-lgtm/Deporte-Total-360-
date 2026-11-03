@@ -251,3 +251,86 @@ test("un error de caché no interrumpe la API", async () => {
 
   assert.equal(response.status, 200);
 });
+
+
+test("catálogo en vivo devuelve solo señales HTTPS directas autorizadas del rango", async () => {
+  const catalog = [
+    {
+      id: "fixture-123-main",
+      eventId: "123",
+      eventTitle: "Equipo Azul vs Equipo Rojo",
+      sport: "football",
+      name: "Señal oficial",
+      url: "https://media.example/live.m3u8",
+      startsAt: "2026-11-03T19:00:00Z"
+    },
+    {
+      id: "web-player",
+      eventId: "123",
+      eventTitle: "Página externa",
+      sport: "football",
+      name: "No es señal directa",
+      url: "https://example.com/watch?id=123",
+      startsAt: "2026-11-03T19:00:00Z"
+    },
+    {
+      id: "other-sport",
+      eventId: "456",
+      eventTitle: "Partido NBA",
+      sport: "nba",
+      name: "Señal NBA",
+      url: "https://media.example/nba.mp4",
+      startsAt: "2026-11-03T20:00:00Z"
+    },
+    {
+      id: "outside-range",
+      eventId: "789",
+      eventTitle: "Partido futuro",
+      sport: "football",
+      name: "Señal futura",
+      url: "https://media.example/future.m3u8",
+      startsAt: "2026-11-20T20:00:00Z"
+    }
+  ];
+
+  const response = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-03&to=2026-11-09&timezone=America%2FGuyana"),
+    { LIVE_STREAM_CATALOG_JSON: JSON.stringify(catalog) }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.configured, true);
+  assert.equal(body.count, 1);
+  assert.equal(body.sources[0].id, "fixture-123-main");
+  assert.equal(body.sources[0].eventId, "123");
+  assert.equal(body.sources[0].url, "https://media.example/live.m3u8");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("catálogo no configurado devuelve una lista vacía sin error", async () => {
+  const response = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-03&to=2026-11-09&timezone=America%2FGuyana"),
+    {}
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.configured, false);
+  assert.equal(body.count, 0);
+  assert.deepEqual(body.sources, []);
+});
+
+test("catálogo rechaza rangos inválidos y JSON malformado", async () => {
+  const invalidRange = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-10&to=2026-11-03&timezone=America%2FGuyana"),
+    {}
+  );
+  assert.equal(invalidRange.status, 400);
+
+  const invalidJson = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-03&to=2026-11-09&timezone=America%2FGuyana"),
+    { LIVE_STREAM_CATALOG_JSON: "not-json" }
+  );
+  assert.equal(invalidJson.status, 503);
+});
