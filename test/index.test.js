@@ -162,7 +162,7 @@ test("catálogo en vivo rechaza fechas de consulta imposibles", async () => {
 
 
 test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () => {
-  const html = \`<html><script type="application/ld+json">
+  const html = `<html><script type="application/ld+json">
     {
       "@context":"https://schema.org",
       "@type":"SportsEvent",
@@ -174,7 +174,7 @@ test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () =>
       "awayTeam":{"@type":"SportsTeam","name":"Equipo Rojo"},
       "superEvent":{"@type":"SportsEvent","name":"Liga de prueba"}
     }
-  </script></html>\`;
+  </script></html>`;
   const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
   assert.equal(events.length, 1);
   assert.equal(events[0].homeTeam, "Equipo Azul");
@@ -185,28 +185,28 @@ test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () =>
 });
 
 test("el parseo de MARCA convierte horarios locales Europe/Madrid", () => {
-  const html = \`<script type="application/ld+json">
+  const html = `<script type="application/ld+json">
     {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
      "sport":"football","startDate":"2026-11-03T19:30"}
-  </script>\`;
+  </script>`;
   const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T10:00:00Z"));
   assert.equal(events.length, 1);
   assert.equal(events[0].startsAt, Date.parse("2026-11-03T18:30:00Z"));
 });
 
 test("M3U y XMLTV se cruzan por tvg-id y nombres de canal", () => {
-  const channels = parseM3u(\`#EXTM3U
+  const channels = parseM3u(`#EXTM3U
 #EXTINF:-1 tvg-id="sports.es" tvg-name="Deportes ES" tvg-language="Spanish" group-title="Deportes",Canal Deportes HD
 https://media.example/live.m3u8
-\`);
+`);
   assert.equal(channels.length, 1);
   assert.equal(channels[0].language, "Spanish");
-  const programmes = parseXmltv(\`<tv>
+  const programmes = parseXmltv(`<tv>
     <channel id="sports.es"><display-name>Deportes ES</display-name></channel>
     <programme channel="sports.es" start="20261103193000 +0000" stop="20261103213000 +0000">
       <title>Equipo Azul vs Equipo Rojo</title>
     </programme>
-  </tv>\`);
+  </tv>`);
   assert.equal(programmes.length, 1);
   assert.equal(programmes[0].channelName, "Deportes ES");
   assert.equal(programmeMatchesEvent(programmes[0].title, {
