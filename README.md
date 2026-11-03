@@ -83,7 +83,7 @@ El Worker también ejecuta un planificador automático en la nube, independiente
 - El estado común se guarda en un Durable Object SQLite. `GET /api/live/auto/schedule` entrega a todas las APK la misma agenda y las asignaciones verificadas, incluyendo hora final para liberar el reproductor.
 - Una guía EPG puede anunciar una emisión pero no crea el vídeo. Si ninguna señal coincide o responde, el evento sigue en espera y no se inventa una transmisión.
 
-El planificador continúa cuando el teléfono del propietario está apagado o la APK está desinstalada, una vez que este Worker actualizado esté desplegado en Cloudflare. Los teléfonos con la APK actualizada consultan el endpoint al estar conectados. Firebase Cloud Messaging registra los dispositivos que activan las notificaciones y envía un aviso cuando una señal directa queda verificada dentro de la ventana previa al evento. `POST /api/live/devices/register` registra el token y `POST /api/live/devices/unregister` lo elimina al desactivar avisos. Al tocar la notificación, la APK abre Deportes en vivo; Android no permite forzar la reproducción con la app cerrada y el usuario debe pulsar Play. El envío requiere el secreto `FCM_SERVICE_ACCOUNT_JSON` en Cloudflare Worker.
+El planificador continúa cuando el teléfono del propietario está apagado o la APK está desinstalada, una vez que este Worker actualizado esté desplegado en Cloudflare. Los teléfonos con la APK actualizada consultan el endpoint al estar conectados. Firebase Cloud Messaging envía un aviso al tema `deporte_total_360_live` cuando una señal directa queda verificada dentro de la ventana previa al evento. Cada APK se suscribe al tema solo si el usuario activa Notificaciones y se da de baja al desactivarlas. El Worker envía una sola notificación al tema, sin almacenar tokens de dispositivos. Al tocar el aviso, la APK abre Deportes en vivo; Android no permite forzar la reproducción con la app cerrada y el usuario debe pulsar Play. El envío requiere el secreto `FCM_SERVICE_ACCOUNT_JSON` en Cloudflare Worker.
 
 El contenido de la página MARCA puede cambiar o impedir el acceso automatizado. En tal caso el estado publicado marca la fuente como desactualizada o no disponible y conserva solo eventos anteriores que aún no hayan vencido; la captura estructurada de MARCA debe verificarse en los registros del Worker tras el primer despliegue.
 
@@ -96,7 +96,7 @@ workflow de despliegue:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `APISPORTS_KEY`
 
-Además, configura `FCM_SERVICE_ACCOUNT_JSON` como secreto del Worker en Cloudflare Dashboard (Settings → Variables and Secrets). Debe contener el JSON de una cuenta de servicio del mismo proyecto Firebase, con permiso para enviar mensajes de Firebase Cloud Messaging. No guardes ese JSON en GitHub, el APK ni el repositorio.
+Además, configura `FCM_SERVICE_ACCOUNT_JSON` como secreto del Worker en Cloudflare Dashboard (Settings → Variables and Secrets). Debe contener el JSON de una cuenta de servicio del mismo proyecto Firebase, con permiso para enviar mensajes de Firebase Cloud Messaging. No guardes ese JSON en GitHub, el APK ni el repositorio. La APK debe usar los cuatro secretos cliente Firebase descritos en el README del repositorio de la app.
 
 El workflow publica `APISPORTS_KEY` en Cloudflare Worker mediante Wrangler. El binding SQLite del planificador y su Cron Trigger se crean desde `wrangler.toml`.
 El Worker admite también `APIFOOTBALL_KEY` como nombre antiguo alternativo,
