@@ -975,7 +975,7 @@ async function dispatchLiveNotifications(state, env, snapshot, now) {
   const events = (snapshot.events || []).filter(item =>
     item.state === 'verified' &&
     item.sources?.length &&
-    item.event?.status !== 'finished' &&
+    !["finished", "cancelled", "postponed"].includes(item.event?.status) &&
     Date.parse(item.event?.startsAt) <= now + 10 * 60 * 1000 &&
     Date.parse(item.removeAt) > now
   );
@@ -1141,7 +1141,8 @@ async function refreshState(state, env, now = Date.now()) {
     const candidates = catalog?.candidatesByEvent?.[event.id] || [];
     let selected = null;
     const scheduledAt = event.startsAt - 10 * 60 * 1000;
-    if (now >= scheduledAt && now < event.endsAt && event.status !== "finished") {
+    if (now >= scheduledAt && now < event.endsAt &&
+        !["finished", "cancelled", "postponed"].includes(event.status)) {
       const verifyGroup = async group => {
         for (const candidate of group.slice(0, 12)) {
           const cached = probeCache[candidate.url];
