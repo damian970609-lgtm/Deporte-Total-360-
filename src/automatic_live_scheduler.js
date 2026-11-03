@@ -236,19 +236,78 @@ function eventSport(event) {
     event.sport, event.discipline, event.category, event.description, event.name
   ].join(" "));
   if (/basket|baloncesto|nba/.test(value)) return "Baloncesto";
-  if (/tennis|tenis|wta|atp/.test(value)) return "Tenis";
-  if (/formula 1|motogp|nascar|rally|motorsport|automovil/.test(value)) return "Motor";
+  if (/tennis|tenis|wta|atp|padel|paddle|squash/.test(value)) return "Tenis";
+  if (/formula 1|formula one|motogp|nascar|rally|motorsport|automovil|gran premio/.test(value)) return "Motor";
+  if (/cycling|ciclismo|tour de|giro d|vuelta a espana/.test(value)) return "Ciclismo";
+  if (/athlet|atletismo|marathon|maraton|running|carrera a pie/.test(value)) return "Atletismo";
+  if (/swimming|natacion|clavados|water polo/.test(value)) return "Natación";
+  if (/golf|pga tour|ryder cup/.test(value)) return "Golf";
+  if (/surf|surfing|snowboard|ski|esqui/.test(value)) return "Deportes de acción";
   if (/baseball|beisbol|mlb/.test(value)) return "Béisbol";
   if (/rugby/.test(value)) return "Rugby";
   if (/hockey|nhl/.test(value)) return "Hockey";
   if (/volley|voleibol/.test(value)) return "Voleibol";
-  if (/boxing|boxeo|mma|ufc/.test(value)) return "Combate";
+  if (/boxing|boxeo|mma|ufc|wrestling|lucha/.test(value)) return "Combate";
+  if (/cricket/.test(value)) return "Críquet";
+  if (/chess|ajedrez/.test(value)) return "Ajedrez";
+  if (/esport|e sports|videojuegos/.test(value)) return "eSports";
   if (/football|futbol|soccer|laliga|champions|premier|liga/.test(value)) return "Fútbol";
   return textValue(event.sport || event.discipline || event.category) || "Deporte";
 }
 
+function safeImageUrl(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = safeImageUrl(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  const candidate = typeof value === "string"
+    ? value
+    : value && typeof value === "object"
+      ? value.url || value.contentUrl || value.thumbnailUrl || value.src || value.image
+      : "";
+  try {
+    const url = new URL(String(candidate || "").trim());
+    return url.protocol === "https:" && !url.username && !url.password
+      ? url.toString()
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 function teamName(value) {
-  return textValue(value?.name || value?.alternateName || value);
+  return textValue(value?.name || value?.alternateName || value?.title || value);
+}
+
+function participantInfo(value, role = "") {
+  if (typeof value === "string" || typeof value === "number") {
+    const name = textValue(value);
+    return name ? { name: name.slice(0, 100), imageUrl: "", country: "", role } : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const name = textValue(value.name || value.alternateName || value.title || value.athlete);
+  if (!name) return null;
+  return {
+    name: name.slice(0, 100),
+    imageUrl: safeImageUrl(value.logo || value.image || value.thumbnailUrl || value.photo || value.picture),
+    country: textValue(value.nationality || value.country || value.affiliation).slice(0, 60),
+    role
+  };
+}
+
+function collectParticipants(values) {
+  const list = Array.isArray(values) ? values : values == null ? [] : [values];
+  const unique = new Map();
+  for (const value of list) {
+    const participant = participantInfo(value);
+    if (!participant) continue;
+    const key = normalize(participant.name);
+    if (key && !unique.has(key)) unique.set(key, participant);
+  }
+  return Array.from(unique.values()).slice(0, 12);
 }
 
 function splitTeams(title) {
@@ -276,15 +335,50 @@ function unwrapEventObject(item) {
     item.start_time || item.datetime || item.date;
   const startsAt = parseDateTime(startValue);
   if (!name || !startsAt) return null;
+
+  const homeRaw = item.homeTeam || item.home || item.teamHome;
+  const awayRaw = item.awayTeam || item.away || item.teamAway;
   const teamSplit = splitTeams(name);
-  const homeTeam = teamName(item.homeTeam || item.home || item.teamHome) || teamSplit.homeTeam;
-  const awayTeam = teamName(item.awayTeam || item.away || item.teamAway) || teamSplit.awayTeam;
+  const homeTeam = teamName(homeRaw) || teamSplit.homeTeam;
+  const awayTeam = teamName(awayRaw) || teamSplit.awayTeam;
+  const homeTeamLogo = safeImageUrl(
+    homeRaw?.logo || homeRaw?.image || homeRaw?.photo ||
+    item.homeTeamLogo || item.homeLogo
+  );
+  const awayTeamLogo = safeImageUrl(
+    awayRaw?.logo || awayRaw?.image || awayRaw?.photo ||
+    item.awayTeamLogo || item.awayLogo
+  );
+
+  const participantSource = item.participants || item.competitors ||
+    item.competitor || item.performers || item.performer ||
+    item.athletes || item.athlete || item.players;
+  const participants = collectParticipants(participantSource);
+  if (homeTeam && !participants.some(row => normalize(row.name) === normalize(homeTeam))) {
+    participants.unshift({
+      name: homeTeam, imageUrl: homeTeamLogo, country: "", role: "home"
+    });
+  } else if (homeTeam && homeTeamLogo) {
+    const current = participants.find(row => normalize(row.name) === normalize(homeTeam));
+    if (current && !current.imageUrl) current.imageUrl = homeTeamLogo;
+  }
+  if (awayTeam && !participants.some(row => normalize(row.name) === normalize(awayTeam))) {
+    participants.push({
+      name: awayTeam, imageUrl: awayTeamLogo, country: "", role: "away"
+    });
+  } else if (awayTeam && awayTeamLogo) {
+    const current = participants.find(row => normalize(row.name) === normalize(awayTeam));
+    if (current && !current.imageUrl) current.imageUrl = awayTeamLogo;
+  }
+  const uniqueParticipants = collectParticipants(participants);
+
   const eventText = normalize([
     type, item.sport, item.discipline, item.category, name,
     item.description, homeTeam, awayTeam
   ].join(" "));
-  const sportsType = /sports?event|sport|football|futbol|soccer|basket|tennis|tenis|hockey|baseball|rugby|formula|motogp|cricket|volley|boxing|mma/.test(eventText);
+  const sportsType = /sports?event|sport|football|futbol|soccer|basket|tennis|tenis|hockey|baseball|rugby|formula|motogp|cricket|volley|boxing|mma|athlet|golf|cycling|ciclismo|swimming|natacion|padel|surf|esport|chess/.test(eventText);
   if (!sportsType && !(homeTeam && awayTeam)) return null;
+
   const endsAt = parseDateTime(item.endDate || item.endTime || item.endsAt || item.end_time);
   const competition = textValue(
     item.competition || item.league || item.superEvent || item.tournament || item.eventSeries
@@ -297,6 +391,7 @@ function unwrapEventObject(item) {
     category: item.category, description: item.description, name
   });
   const duration = sport === "Tenis" ? 4 : sport === "Motor" ? 3 : 3;
+  const location = item.location?.name || item.location || item.venue;
   return {
     id: textValue(item.identifier || item.id) || stableId(name, startsAt),
     title: name.slice(0, 180),
@@ -304,13 +399,17 @@ function unwrapEventObject(item) {
     competition: competition.slice(0, 120),
     homeTeam: homeTeam.slice(0, 80),
     awayTeam: awayTeam.slice(0, 80),
+    homeTeamLogo,
+    awayTeamLogo,
+    participants: uniqueParticipants,
+    imageUrl: safeImageUrl(item.image || item.thumbnailUrl || item.thumbnail || item.photo),
+    venue: textValue(location).slice(0, 120),
     startsAt,
     endsAt: endsAt && endsAt > startsAt ? endsAt : startsAt + duration * 60 * 60 * 1000,
     status: finished ? "finished" : "scheduled",
     detailUrl: MARCA_AGENDA_URL
   };
 }
-
 function walkStructuredData(value, output, depth = 0) {
   if (!value || depth > 12) return;
   if (Array.isArray(value)) {
@@ -372,33 +471,53 @@ function extractPlainTextAgendaEvents(html, now) {
   const output = [];
   const pairPattern = /([A-ZÀ-Ý0-9][^|•]{2,75}?)\s+(?:vs?\.?|versus|contra|[-–—])\s+([A-ZÀ-Ý0-9][^|•]{2,75})/i;
   const timePattern = /\b([01]?\d|2[0-3]):([0-5]\d)\b/;
+  const genericLines = /^(hoy|manana|ayer|programacion|programacion tv|agenda|deportes|horarios|en directo|television)$/i;
+
   for (let index = 0; index < lines.length; index++) {
     const time = timePattern.exec(lines[index]);
     if (!time) continue;
-    const context = lines.slice(Math.max(0, index - 2), index + 3)
-      .join(" · ").slice(0, 300);
+    const contextLines = lines.slice(Math.max(0, index - 2), Math.min(lines.length, index + 3));
+    const context = contextLines.join(" · ").slice(0, 420);
     const pair = pairPattern.exec(context);
-    if (!pair) continue;
+    const sport = eventSport({ description: context });
+    if (!pair && sport === "Deporte") continue;
+
+    const candidate = contextLines
+      .map(line => line.replace(timePattern, "").replace(/[|•·]+/g, " ").trim())
+      .filter(line => line.length >= 5 && !genericLines.test(normalize(line)))
+      .sort((a, b) => b.length - a.length)[0] || "";
+    const title = pair
+      ? pair[1].trim() + " vs " + pair[2].trim()
+      : candidate.slice(0, 180);
+    if (title.length < 5) continue;
+
     const hour = Number(time[1]);
     const minute = Number(time[2]);
     let startsAt = madridWallClockToEpoch(
       madrid.year, madrid.month - 1, madrid.day, hour, minute
     );
     if (startsAt < now - 5 * 60 * 60 * 1000) startsAt += 24 * 60 * 60 * 1000;
-    const title = pair[1].trim() + " vs " + pair[2].trim();
     const contextNormalized = normalize(context);
     const finished = /\b(finalizado|finalizada|terminado|terminada|finished|full time|ft|cancelado|cancelada|suspendido|suspendida)\b/.test(contextNormalized);
-    const sport = eventSport({ description: context });
-    const durationHours = sport === "Tenis" ? 4 : 3;
+    const homeTeam = pair ? pair[1].trim().slice(0, 80) : "";
+    const awayTeam = pair ? pair[2].trim().slice(0, 80) : "";
     output.push({
       id: stableId(title, startsAt),
       title: title.slice(0, 180),
-      sport,
+      sport: sport === "Deporte" && pair ? "Fútbol" : sport,
       competition: "",
-      homeTeam: pair[1].trim().slice(0, 80),
-      awayTeam: pair[2].trim().slice(0, 80),
+      homeTeam,
+      awayTeam,
+      homeTeamLogo: "",
+      awayTeamLogo: "",
+      participants: pair ? [
+        { name: homeTeam, imageUrl: "", country: "", role: "home" },
+        { name: awayTeam, imageUrl: "", country: "", role: "away" }
+      ] : [],
+      imageUrl: "",
+      venue: "",
       startsAt,
-      endsAt: startsAt + durationHours * 60 * 60 * 1000,
+      endsAt: startsAt + (sport === "Tenis" ? 4 : 3) * 60 * 60 * 1000,
       status: finished ? "finished" : "scheduled",
       detailUrl: MARCA_AGENDA_URL
     });
@@ -407,7 +526,6 @@ function extractPlainTextAgendaEvents(html, now) {
   for (const event of output) unique.set(event.id, event);
   return Array.from(unique.values());
 }
-
 export function parseMarcaAgendaHtml(html, now = Date.now()) {
   const structured = extractMarcaStructuredEvents(html);
   const events = structured.length ? structured : extractPlainTextAgendaEvents(html, now);
