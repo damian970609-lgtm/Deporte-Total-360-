@@ -170,8 +170,8 @@ test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () =>
       "sport":"Soccer",
       "startDate":"2026-11-03T19:30:00Z",
       "endDate":"2026-11-03T21:30:00Z",
-      "homeTeam":{"@type":"SportsTeam","name":"Equipo Azul"},
-      "awayTeam":{"@type":"SportsTeam","name":"Equipo Rojo"},
+      "homeTeam":{"@type":"SportsTeam","name":"Equipo Azul","logo":{"url":"https://img.example/azul.png"}},
+      "awayTeam":{"@type":"SportsTeam","name":"Equipo Rojo","logo":"https://img.example/rojo.png"},
       "superEvent":{"@type":"SportsEvent","name":"Liga de prueba"}
     }
   </script></html>`;
@@ -181,7 +181,46 @@ test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () =>
   assert.equal(events[0].awayTeam, "Equipo Rojo");
   assert.equal(events[0].sport, "Fútbol");
   assert.equal(events[0].competition, "Liga de prueba");
+  assert.equal(events[0].homeTeamLogo, "https://img.example/azul.png");
+  assert.equal(events[0].awayTeamLogo, "https://img.example/rojo.png");
+  assert.equal(events[0].participants.length, 2);
   assert.equal(events[0].startsAt, Date.parse("2026-11-03T19:30:00Z"));
+});
+
+
+test("la agenda conserva participantes e imágenes en deportes individuales", () => {
+  const html = `<script type="application/ld+json">
+    {
+      "@type":"SportsEvent",
+      "name":"Carlos Alcaraz vs Jannik Sinner",
+      "sport":"Tennis",
+      "startDate":"2026-11-03T19:30:00Z",
+      "competitors":[
+        {"@type":"Person","name":"Carlos Alcaraz","image":{"url":"https://img.example/alcaraz.jpg"},"nationality":"España"},
+        {"@type":"Person","name":"Jannik Sinner","image":"https://img.example/sinner.jpg","nationality":"Italia"}
+      ]
+    }
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sport, "Tenis");
+  assert.equal(events[0].participants.length, 2);
+  assert.equal(events[0].participants[0].name, "Carlos Alcaraz");
+  assert.equal(events[0].participants[0].imageUrl, "https://img.example/alcaraz.jpg");
+  assert.equal(events[0].participants[1].country, "Italia");
+});
+
+test("la agenda acepta eventos individuales sin formato equipo contra equipo", () => {
+  const html = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Final 100 metros masculino",
+     "sport":"Athletics","startDate":"2026-11-03T21:00:00Z",
+     "performer":[{"@type":"Person","name":"Atleta de prueba","image":"https://img.example/athlete.jpg"}]}
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sport, "Atletismo");
+  assert.equal(events[0].participants[0].name, "Atleta de prueba");
+  assert.equal(events[0].participants[0].imageUrl, "https://img.example/athlete.jpg");
 });
 
 test("mantiene en agenda un evento que comenzó hace dos horas y sigue en curso", () => {
