@@ -938,7 +938,7 @@ export default {
     }
 
     if (path === "/api/sportsapi/favorites") {
-      return json(sportsApiFavoritesPayload(), 200, {
+      return json({ data: sportsApiFavoritesPayload() }, 200, {
         "Cache-Control": "public, max-age=3600"
       });
     }
