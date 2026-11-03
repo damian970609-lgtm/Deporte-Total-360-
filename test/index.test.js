@@ -196,6 +196,23 @@ test("mantiene en agenda un evento que comenzó hace dos horas y sigue en curso"
   assert.equal(events[0].endsAt, Date.parse("2026-11-03T19:30:00Z"));
 });
 
+test("retira eventos con estado EventCompleted o EventCancelled", () => {
+  const completed = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
+     "sport":"football","startDate":"2026-11-03T16:00:00Z",
+     "endDate":"2026-11-03T19:30:00Z",
+     "eventStatus":"https://schema.org/EventCompleted"}
+  </script>`;
+  const cancelled = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Verde vs Equipo Blanco",
+     "sport":"football","startDate":"2026-11-03T20:00:00Z",
+     "eventStatus":"https://schema.org/EventCancelled"}
+  </script>`;
+  const now = Date.parse("2026-11-03T18:30:00Z");
+  assert.deepEqual(parseMarcaAgendaHtml(completed, now), []);
+  assert.deepEqual(parseMarcaAgendaHtml(cancelled, now), []);
+});
+
 test("el parseo de MARCA convierte horarios locales Europe/Madrid", () => {
   const html = `<script type="application/ld+json">
     {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
