@@ -1,3 +1,12 @@
+import {
+  fetchSportsApiDailyAgenda,
+  fetchSportsApiFootballPage,
+  fetchSportsApiLiveScores,
+  mergeSportsApiLiveScores,
+  DAY_REFRESH_MS,
+  LIVE_REFRESH_MS
+} from "./sportsapi_favorites.js";
+
 const MARCA_AGENDA_URL = "https://www.marca.com/programacion-tv.html";
 const REFRESH_CATALOG_MS = 5 * 60 * 1000;
 const MAX_AGENDA_AGE_MS = 36 * 60 * 60 * 1000;
@@ -647,8 +656,15 @@ export function programmeMatchesEvent(title, event) {
   if (event.homeTeam && event.awayTeam) {
     return teamMatches(event.homeTeam, programme) && teamMatches(event.awayTeam, programme);
   }
-  const tokens = normalize(event.title).split(" ").filter(t => t.length >= 4);
-  return tokens.length >= 2 && tokens.filter(t => programme.includes(t)).length >= 2;
+  // Para carreras (F1, MotoGP y ciclismo) el nombre de la serie y el evento
+  // ayudan a encontrar la programación EPG aunque no haya dos equipos.
+  const identity = normalize([event.competition, event.title].filter(Boolean).join(" "));
+  const identityTokens = identity.split(" ").filter(t => t.length >= 4);
+  const titleTokens = normalize(event.title).split(" ").filter(t => t.length >= 4);
+  const identityHits = identityTokens.filter(t => programme.includes(t)).length;
+  const titleHits = titleTokens.filter(t => programme.includes(t)).length;
+  return (titleTokens.length >= 2 && titleHits >= 2) ||
+    (identityTokens.length >= 3 && identityHits >= 3);
 }
 
 async function limitedMap(items, limit, callback) {
@@ -985,12 +1001,82 @@ async function dispatchLiveNotifications(state, env, snapshot, now) {
   }
   await state.storage.put('notification_progress', progress);
 }
+async function fetchSportsApiEvents(state, env, now) {
+  const todayUtc = new Date(now).toISOString().slice(0, 10);
+  let daily = await state.storage.get("sportsapi_daily_agenda") || null;
+  let rebuilt = false;
+
+  if (!daily || daily.date !== todayUtc ||
+      now - Number(daily.refreshedAt || 0) >= DAY_REFRESH_MS) {
+    daily = await fetchSportsApiDailyAgenda(env, now);
+    await state.storage.put("sportsapi_daily_agenda", daily);
+    await state.storage.put("sportsapi_football_page_next", 1);
+    await state.storage.put("sportsapi_football_page_checked_at", now);
+    rebuilt = true;
+  }
+
+  // La página inicial cubre diez ligas por deporte. Las tres páginas
+  // siguientes de fútbol se descargan en minutos sucesivos para respetar
+  // el límite por minuto del plan y ampliar la cobertura de copas y fútbol femenino.
+  let pageNext = Number(await state.storage.get("sportsapi_football_page_next") || 4);
+  const pageCheckedAt = Number(await state.storage.get("sportsapi_football_page_checked_at") || 0);
+  if (!rebuilt && pageNext >= 1 && pageNext <= 3 && now - pageCheckedAt >= 60000) {
+    try {
+      const pageResult = await fetchSportsApiFootballPage(env, daily.date, pageNext);
+      const merged = new Map((daily.events || []).map(item => [item.id, item]));
+      for (const event of pageResult.events) merged.set(event.id, event);
+      daily = {
+        ...daily,
+        events: Array.from(merged.values()).sort((a, b) =>
+          Date.parse(a.startsAt) - Date.parse(b.startsAt)
+        ),
+        pagesLoaded: pageNext
+      };
+      await state.storage.put("sportsapi_daily_agenda", daily);
+      await state.storage.put("sportsapi_football_page_next", pageNext + 1);
+      await state.storage.put("sportsapi_football_page_checked_at", now);
+      rebuilt = true;
+    } catch (error) {
+      // A page can be unavailable on a provider plan; keep the valid pages.
+      console.error("SportsAPI football page " + pageNext + ":", String(error?.message || error));
+      await state.storage.put("sportsapi_football_page_next", 4);
+      await state.storage.put("sportsapi_football_page_checked_at", now);
+    }
+  }
+
+  let live = await state.storage.get("sportsapi_live_scores") || null;
+  if (!rebuilt && (!live || now - Number(live.refreshedAt || 0) >= LIVE_REFRESH_MS)) {
+    try {
+      const liveEvents = await fetchSportsApiLiveScores(env);
+      live = { refreshedAt: now, events: liveEvents };
+      await state.storage.put("sportsapi_live_scores", live);
+    } catch (error) {
+      // The cached daily schedule remains usable when live scores are unavailable.
+      console.error("SportsAPI live scores:", String(error?.message || error));
+    }
+  }
+
+  const merged = mergeSportsApiLiveScores(daily.events || [], live?.events || []);
+  return merged.map(item => ({
+    ...item,
+    startsAt: Date.parse(item.startsAt),
+    endsAt: Date.parse(item.endsAt)
+  })).filter(item =>
+    Number.isFinite(item.startsAt) &&
+    Number.isFinite(item.endsAt) &&
+    item.endsAt > item.startsAt
+  );
+}
+
 async function refreshState(state, env, now = Date.now()) {
   const previous = await state.storage.get("snapshot") || null;
   let events;
   let sourceError = null;
+  const agendaSource = env.SPORTAPI_API_KEY ? "sportsapi" : "marca";
   try {
-    events = await fetchMarcaAgenda();
+    events = env.SPORTAPI_API_KEY
+      ? await fetchSportsApiEvents(state, env, now)
+      : await fetchMarcaAgenda();
   } catch (error) {
     sourceError = String(error?.message || error).slice(0, 300);
     if (previous?.events?.length) {
@@ -1001,6 +1087,7 @@ async function refreshState(state, env, now = Date.now()) {
       const snapshot = {
         ...previous,
         status: "stale",
+        source: agendaSource,
         sourceError,
         lastAttemptAt: new Date(now).toISOString(),
         events: retained,
@@ -1011,7 +1098,7 @@ async function refreshState(state, env, now = Date.now()) {
     }
     const emptySnapshot = {
       status: "source_unavailable",
-      source: "marca",
+      source: agendaSource,
       sourceError,
       lastAttemptAt: new Date(now).toISOString(),
       updatedAt: null,
@@ -1105,7 +1192,7 @@ async function refreshState(state, env, now = Date.now()) {
   await state.storage.put("probe_cache", probeCache);
   const snapshot = {
     status: "ok",
-    source: "marca",
+    source: agendaSource,
     sourceError,
     updatedAt: new Date(now).toISOString(),
     lastAttemptAt: new Date(now).toISOString(),
