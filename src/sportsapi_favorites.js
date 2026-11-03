@@ -226,36 +226,54 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
     ...fixtureSports.map(async item => {
       const result = await providerGet(env, "/fixtures", { sport: item.id, date, page: 0 });
       const rows = Array.isArray(result.data) ? result.data : [];
-      return rows.map(mapFixture).filter(Boolean);
+      return {
+        sport: item.id,
+        events: rows.map(mapFixture).filter(Boolean),
+        hasNextPage: result.meta?.hasNextPage === true
+      };
     }),
     ...raceSports.map(async item => {
       const result = await providerGet(env, "/races", { sport: item.id, date });
       const rows = Array.isArray(result.data) ? result.data : [];
-      return rows.flatMap(mapRace);
+      return { sport: item.id, events: rows.flatMap(mapRace), hasNextPage: false };
     })
   ];
   const groups = await Promise.all(jobs);
   const unique = new Map();
-  for (const event of groups.flat()) unique.set(event.id, event);
+  for (const group of groups) {
+    for (const event of group.events) unique.set(event.id, event);
+  }
+  const pageQueue = groups
+    .filter(group => group.hasNextPage)
+    .map(group => ({
+      sport: group.sport,
+      page: 1,
+      maxPage: group.sport === "football" ? 3 : 1
+    }));
   return {
     source: "sportsapi",
     date,
     refreshedAt: now,
+    pageQueue,
     events: Array.from(unique.values()).sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))
   };
 }
 
-export async function fetchSportsApiFootballPage(env, date, page) {
+export async function fetchSportsApiFixturePage(env, date, sport, page) {
   const selectedPage = Number(page);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ||
-      !Number.isInteger(selectedPage) || selectedPage < 1 || selectedPage > 3) {
-    throw new Error("La fecha o página adicional de fútbol no es válida.");
+  const config = FAVORITES_BY_ID.get(String(sport));
+  const maxPage = sport === "football" ? 3 : 1;
+  if (!config || config.kind !== "fixtures" ||
+      !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(date || "")) ||
+      !Number.isInteger(selectedPage) || selectedPage < 1 || selectedPage > maxPage) {
+    throw new Error("La fecha, deporte o página adicional no es válida.");
   }
   const result = await providerGet(env, "/fixtures", {
-    sport: "football", date, page: selectedPage
+    sport: config.id, date, page: selectedPage
   });
   const rows = Array.isArray(result.data) ? result.data : [];
   return {
+    sport: config.id,
     page: selectedPage,
     hasNextPage: result.meta?.hasNextPage === true,
     events: rows.map(mapFixture).filter(Boolean)
