@@ -290,8 +290,8 @@ function unwrapEventObject(item) {
     item.competition || item.league || item.superEvent || item.tournament || item.eventSeries
   );
   const status = normalize(textValue(item.eventStatus || item.status || item.state));
-  const finished = /finished|end|final|terminad|finalizad/.test(status) ||
-    /\b(finalizado|finalizada|terminado|terminada|full time|ft)\b/.test(normalize(item.description));
+  const finished = /finished|end|final|terminad|finalizad|eventcancelled|eventpostponed|cancelad|suspendid/.test(status) ||
+    /\b(finalizado|finalizada|terminado|terminada|full time|ft|cancelado|cancelada|suspendido|suspendida)\b/.test(normalize(item.description));
   const sport = eventSport({
     sport: item.sport, discipline: item.discipline,
     category: item.category, description: item.description, name
