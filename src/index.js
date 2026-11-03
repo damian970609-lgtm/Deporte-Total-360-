@@ -916,6 +916,25 @@ export default {
       return room.fetch(new Request(target.toString(), request));
     }
 
+    if (path === "/api/live/devices/register" ||
+        path === "/api/live/devices/unregister") {
+      if (request.method !== "POST") {
+        return json({ error: "Método no permitido" }, 405,
+          { Allow: "POST, OPTIONS" });
+      }
+      if (!env.AUTOMATIC_LIVE_SCHEDULE) {
+        return json({ error: "El registro de dispositivos todavía no está configurado." }, 503);
+      }
+      const id = env.AUTOMATIC_LIVE_SCHEDULE.idFromName("deporte-total-360-global");
+      const scheduler = env.AUTOMATIC_LIVE_SCHEDULE.get(id);
+      const internalPath = path.endsWith("/unregister")
+        ? "/device/unregister" : "/device/register";
+      return scheduler.fetch(new Request(
+        "https://automatic-live.internal" + internalPath,
+        request
+      ));
+    }
+
     if (request.method !== "GET") {
       return json(
         { error: "Método no permitido" },
