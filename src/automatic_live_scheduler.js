@@ -753,7 +753,10 @@ async function refreshState(state, env, now = Date.now()) {
         endsAt: new Date(event.endsAt).toISOString()
       },
       removeAt: new Date(removeAt).toISOString(),
-      sources: selected ? [selected] : [],
+      sources: selected ? [{
+        ...selected,
+        programmeEndsAt: new Date(selected.programmeEndsAt).toISOString()
+      }] : [],
       state: selected ? "verified" : now >= scheduledAt ? "searching" : "waiting"
     });
   }
