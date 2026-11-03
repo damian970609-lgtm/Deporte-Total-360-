@@ -217,15 +217,18 @@ function madridWallClockToEpoch(year, monthIndex, day, hour, minute) {
 function parseDateTime(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
-  const explicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const explicitZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(raw);
+  if (!explicitZone) {
+    const wallClock = /^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?/.exec(raw);
+    if (wallClock) {
+      return madridWallClockToEpoch(
+        Number(wallClock[1]), Number(wallClock[2]) - 1,
+        Number(wallClock[3]), Number(wallClock[4]), Number(wallClock[5])
+      ) + Number(wallClock[6] || 0) * 1000;
+    }
+  }
   const parsed = Date.parse(raw);
-  if (!Number.isFinite(parsed)) return null;
-  if (explicitZone) return parsed;
-  const date = new Date(parsed);
-  return madridWallClockToEpoch(
-    date.getFullYear(), date.getMonth(), date.getDate(),
-    date.getHours(), date.getMinutes()
-  );
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function eventSport(event) {
@@ -356,8 +359,53 @@ function extractMarcaStructuredEvents(html) {
   return Array.from(unique.values()).sort((a, b) => a.startsAt - b.startsAt);
 }
 
+function extractPlainTextAgendaEvents(html, now) {
+  const text = decodeEntities(String(html || "")
+    .replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi, " ")
+    .replace(/<style\\b[^>]*>[\\s\\S]*?<\\/style>/gi, " ")
+    .replace(/<[^>]+>/g, "\\n"))
+    .replace(/\\u00a0/g, " ");
+  const lines = text.split(/[\\r\\n]+/).map(line => line.replace(/\\s+/g, " ").trim()).filter(Boolean);
+  const madrid = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date(now)).map(part => [part.type, Number(part.value)]));
+  const output = [];
+  const pairPattern = /([A-ZÀ-Ý0-9][^|•]{2,75}?)\\s+(?:vs?\\.?|versus|contra|[-–—])\\s+([A-ZÀ-Ý0-9][^|•]{2,75})/i;
+  const timePattern = /\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b/;
+  for (let index = 0; index < lines.length; index++) {
+    const time = timePattern.exec(lines[index]);
+    if (!time) continue;
+    const context = lines.slice(index, index + 3).join(" · ").slice(0, 250);
+    const pair = pairPattern.exec(context);
+    if (!pair) continue;
+    const hour = Number(time[1]);
+    const minute = Number(time[2]);
+    let startsAt = madridWallClockToEpoch(
+      madrid.year, madrid.month - 1, madrid.day, hour, minute
+    );
+    if (startsAt < now - 5 * 60 * 60 * 1000) startsAt += 24 * 60 * 60 * 1000;
+    const title = pair[1].trim() + " vs " + pair[2].trim();
+    output.push({
+      id: stableId(title, startsAt),
+      title: title.slice(0, 180),
+      sport: "Fútbol",
+      competition: "",
+      homeTeam: pair[1].trim().slice(0, 80),
+      awayTeam: pair[2].trim().slice(0, 80),
+      startsAt,
+      endsAt: startsAt + DEFAULT_EVENT_DURATION_MS,
+      status: "scheduled",
+      detailUrl: MARCA_AGENDA_URL
+    });
+  }
+  const unique = new Map();
+  for (const event of output) unique.set(event.id, event);
+  return Array.from(unique.values());
+}
+
 export function parseMarcaAgendaHtml(html, now = Date.now()) {
-  const events = extractMarcaStructuredEvents(html);
+  const structured = extractMarcaStructuredEvents(html);
+  const events = structured.length ? structured : extractPlainTextAgendaEvents(html, now);
   const cutoff = now - 60 * 60 * 1000;
   const horizon = now + MAX_AGENDA_AGE_MS;
   return events.filter(event =>
@@ -515,8 +563,8 @@ async function buildCandidateIndex(events) {
   };
 }
 
-async function probeCandidate(candidate) {
-  if (!safeDirectMediaUrl(candidate.url)) return false;
+async function probeCandidate(candidate, depth = 0) {
+  if (!safeDirectMediaUrl(candidate.url) || depth > 2) return false;
   try {
     const response = await fetch(candidate.url, {
       headers: {
@@ -531,8 +579,29 @@ async function probeCandidate(candidate) {
     if (!bytes.length || bytes.length > 1024 * 1024) return false;
     const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
     const lower = candidate.url.toLowerCase();
-    if (lower.includes(".m3u8")) return body.trimStart().startsWith("#EXTM3U");
-    if (lower.includes(".mpd")) return /<MPD\b/i.test(body);
+    if (lower.includes(".m3u8")) {
+      if (!body.trimStart().startsWith("#EXTM3U")) return false;
+      const lines = body.replace(/\\r/g, "").split("\\n").map(line => line.trim());
+      let target = null;
+      for (const line of lines) {
+        if (!line || line.startsWith("#")) continue;
+        target = line;
+        break;
+      }
+      if (!target) return false;
+      const resolved = new URL(target, candidate.url).toString();
+      if (depth === 0 && /\\.m3u8(?:$|\\?)/i.test(resolved)) {
+        return await probeCandidate({ ...candidate, url: resolved }, depth + 1);
+      }
+      const segment = await fetch(resolved, {
+        headers: { "Range": "bytes=0-2047" },
+        signal: AbortSignal.timeout ? AbortSignal.timeout(7000) : undefined
+      });
+      if (!segment.ok && segment.status !== 206) return false;
+      const chunk = await segment.arrayBuffer();
+      return chunk.byteLength > 0;
+    }
+    if (lower.includes(".mpd")) return /<MPD\\b/i.test(body);
     return true;
   } catch {
     return false;
@@ -630,51 +699,42 @@ async function refreshState(state, env, now = Date.now()) {
     let selected = null;
     const scheduledAt = event.startsAt - 10 * 60 * 1000;
     if (now >= scheduledAt && now < event.endsAt && event.status !== "finished") {
-      for (const candidate of candidates) {
-        const cached = probeCache[candidate.url];
-        if (cached && now - cached.checkedAt < 45000) {
-          if (cached.available) {
-            selected = { ...candidate, available: true, checkedAt: new Date(cached.checkedAt).toISOString() };
-            break;
-          }
-          continue;
-        }
-        const available = await probeCandidate(candidate);
-        probeCache[candidate.url] = { available, checkedAt: now };
-        if (available) {
-          selected = { ...candidate, available: true, checkedAt: new Date(now).toISOString() };
-          break;
-        }
-        // Limita el trabajo por partido y por ejecución.
-        if (candidate === candidates[Math.min(candidates.length, 11)]) break;
-      }
-      // No se salta una señal española para pasar a otra lengua hasta agotar
-      // candidatos españoles comprobables.
-      if (!selected && candidates.some(item => item.languagePriority > 0)) {
-        for (const candidate of candidates.filter(item => item.languagePriority === 0).slice(0, 12)) {
+      const verifyGroup = async group => {
+        for (const candidate of group.slice(0, 12)) {
           const cached = probeCache[candidate.url];
           if (cached && now - cached.checkedAt < 45000) {
             if (cached.available) {
-              selected = { ...candidate, available: true, checkedAt: new Date(cached.checkedAt).toISOString() };
-              break;
+              return {
+                ...candidate,
+                available: true,
+                checkedAt: new Date(cached.checkedAt).toISOString()
+              };
             }
             continue;
           }
           const available = await probeCandidate(candidate);
           probeCache[candidate.url] = { available, checkedAt: now };
           if (available) {
-            selected = { ...candidate, available: true, checkedAt: new Date(now).toISOString() };
-            break;
+            return {
+              ...candidate,
+              available: true,
+              checkedAt: new Date(now).toISOString()
+            };
           }
         }
-      }
+        return null;
+      };
+      // No se prueba otra lengua hasta agotar los candidatos en español.
+      const spanish = candidates.filter(item => item.languagePriority > 0);
+      const international = candidates.filter(item => item.languagePriority === 0);
+      selected = await verifyGroup(spanish);
+      if (!selected) selected = await verifyGroup(international);
     }
     const programmeEndsAt = selected?.programmeEndsAt || 0;
-    const removeAt = Math.max(
-      event.startsAt + 60 * 60 * 1000,
-      Math.min(event.endsAt || event.startsAt + DEFAULT_EVENT_DURATION_MS,
-        programmeEndsAt && programmeEndsAt > event.startsAt ? programmeEndsAt : event.endsAt)
-    );
+    const expectedEnd = event.endsAt || event.startsAt + DEFAULT_EVENT_DURATION_MS;
+    const removeAt = programmeEndsAt > event.startsAt
+      ? Math.min(expectedEnd, programmeEndsAt)
+      : expectedEnd;
     if (removeAt <= now || event.status === "finished") continue;
     output.push({
       event: {
