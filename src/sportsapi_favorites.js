@@ -67,6 +67,32 @@ export const SPORTSAPI_FAVORITES = [
 const FAVORITES_BY_ID = new Map(SPORTSAPI_FAVORITES.map(item => [item.id, item]));
 const LIVE_REFRESH_MS = 30 * 60 * 1000;
 const DAY_REFRESH_MS = 20 * 60 * 60 * 1000;
+const COMPETITION_ALIASES = {
+  "LaLiga": ["La Liga", "Primera Division Spain"],
+  "Brasileirao": ["Campeonato Brasileiro Serie A", "Brazil Serie A", "Brasileiro Serie A"],
+  "Brasileirao Feminino": [
+    "Campeonato Brasileiro Feminino", "Brasileiro Feminino Serie A1",
+    "Brazil Women Serie A"
+  ],
+  "UEFA European Championship": ["European Championship", "UEFA Euro"],
+  "FIFA World Cup": ["World Cup Men", "FIFA World Cup Men"],
+  "FIFA Women's World Cup": ["Women's World Cup", "World Cup Women"],
+  "FIFA Club World Cup": ["Club World Cup"],
+  "Women's Super League": ["FA Women's Super League", "WSL"],
+  "Frauen-Bundesliga": ["Google Pixel Frauen Bundesliga"],
+  "Serie A Women": ["Serie A Femminile"],
+  "Premiere Ligue": ["Premiere Ligue Women", "French Women's League"],
+  "UEFA Women's EURO": ["Women's European Championship", "Women's Euro"],
+  "Women's Africa Cup of Nations": ["WAFCON"],
+  "FIVB Volleyball World Championship": ["Volleyball World Championship"],
+  "FIVB Women's Volleyball World Championship": ["Women's Volleyball World Championship"],
+  "FIFA Futsal Women's World Cup": ["Women's Futsal World Cup"],
+  "Tour de France Femmes": ["Tour de France Women", "Tour de France Femmes avec Zwift"],
+  "La Vuelta Femenina": ["Vuelta a Espana Femenina", "La Vuelta Femenina by Carrefour.es"],
+  "Giro d'Italia Women": ["Giro d Italia Women", "Giro Donne"],
+  "FIM Women's Circuit Racing World Championship": ["WorldWCR", "FIM Women's Circuit Racing World Championship"]
+};
+
 
 function normalize(value) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -78,7 +104,11 @@ function isFavouriteCompetition(sport, name) {
   const config = FAVORITES_BY_ID.get(sport);
   const value = normalize(name);
   if (!config || !value) return false;
-  return config.competitions.some(candidate => {
+  const candidates = config.competitions.flatMap(candidate => [
+    candidate,
+    ...(COMPETITION_ALIASES[candidate] || [])
+  ]);
+  return candidates.some(candidate => {
     const expected = normalize(candidate);
     return value === expected || value.includes(expected) || expected.includes(value);
   });
@@ -256,7 +286,7 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
     .map(group => ({
       sport: group.sport,
       page: 1,
-      // Hasta 30 ligas por deporte seleccionado; evita recorrer el catálogo
+      // Hasta 40 ligas por deporte seleccionado; evita recorrer el catálogo
       // entero y limita las consultas adicionales dentro de la cuota diaria.
       maxPage: 4
     }));
