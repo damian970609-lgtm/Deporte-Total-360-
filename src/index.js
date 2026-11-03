@@ -783,7 +783,7 @@ function isAllowedLiveMediaUrl(value) {
 // No busca, rastrea ni extrae enlaces de reproductores o páginas de terceros.
 function localCatalogDate(value, timeZone) {
   const text = String(value || "").trim();
-  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
     return validDate(text) ? text : null;
   }
   const instant = new Date(text);
