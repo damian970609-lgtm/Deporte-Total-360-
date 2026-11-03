@@ -517,3 +517,71 @@ test("un error de caché no interrumpe la API", async () => {
 
   assert.equal(response.status, 200);
 });
+
+
+test("el Durable Object registra y elimina tokens FCM de dispositivos", async () => {
+  const values = new Map();
+  const scheduler = new AutomaticLiveSchedule({
+    storage: {
+      async get(key) { return values.get(key); },
+      async put(key, value) { values.set(key, value); }
+    }
+  }, {});
+  const token = "fcm-registration-token-".padEnd(180, "x");
+  const register = await scheduler.fetch(new Request(
+    "https://automatic-live.internal/device/register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, platform: "android", language: "es" })
+    }
+  ));
+  assert.equal(register.status, 200);
+  assert.equal((await register.json()).registered, true);
+  assert.equal(values.get("device_tokens")[token].platform, "android");
+
+  const unregister = await scheduler.fetch(new Request(
+    "https://automatic-live.internal/device/unregister",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token })
+    }
+  ));
+  assert.equal(unregister.status, 200);
+  assert.equal((await unregister.json()).registered, false);
+  assert.equal(values.get("device_tokens")[token], undefined);
+});
+
+test("la ruta pública reenvía el registro FCM al Durable Object central", async () => {
+  let requestedPath = "";
+  const binding = {
+    idFromName(name) {
+      assert.equal(name, "deporte-total-360-global");
+      return "global";
+    },
+    get() {
+      return {
+        async fetch(request) {
+          requestedPath = new URL(request.url).pathname;
+          return new Response(JSON.stringify({ registered: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+      };
+    }
+  };
+  const token = "fcm-registration-token-".padEnd(180, "x");
+  const response = await worker.fetch(
+    new Request("https://worker.example/api/live/devices/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, platform: "android" })
+    }),
+    { AUTOMATIC_LIVE_SCHEDULE: binding }
+  );
+  assert.equal(response.status, 200);
+  assert.equal(requestedPath, "/device/register");
+  assert.equal((await response.json()).registered, true);
+});
