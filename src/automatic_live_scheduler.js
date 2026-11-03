@@ -951,6 +951,7 @@ export class AutomaticLiveSchedule {
     this.state = state;
     this.env = env;
     this.refreshPromise = null;
+    this.deviceRegistrationAt = new Map();
   }
 
   async fetch(request) {
@@ -972,6 +973,13 @@ export class AutomaticLiveSchedule {
       if (token.length < 100 || token.length > 4096) {
         return json({ error: "Token FCM no válido" }, 400);
       }
+      const clientKey = request.headers.get("CF-Connecting-IP") || "anonymous";
+      const now = Date.now();
+      const previous = this.deviceRegistrationAt.get(clientKey) || 0;
+      if (now - previous < 3000) {
+        return json({ error: "Espera antes de volver a registrar el dispositivo" }, 429);
+      }
+      this.deviceRegistrationAt.set(clientKey, now);
       const devices = await this.state.storage.get("device_tokens") || {};
       if (url.pathname === "/device/unregister") {
         delete devices[token];
