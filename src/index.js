@@ -678,7 +678,13 @@ function parseAuthorizedLiveCatalog(raw) {
     if (typeof item.eventTitle !== "string" || !item.eventTitle.trim() || item.eventTitle.length > 180) return false;
     if (typeof item.startsAt !== "string" || !Number.isFinite(Date.parse(item.startsAt))) return false;
 
-    const media = new URL(item.url);
+    if (typeof item.url !== "string" || item.url.length > 2048) return false;
+    let media;
+    try {
+      media = new URL(item.url);
+    } catch {
+      return false;
+    }
     if (media.protocol !== "https:" || media.username || media.password) return false;
     if (!/\.(m3u8|mp4)$/i.test(media.pathname)) return false;
     if (media.hostname === "localhost" || media.hostname.endsWith(".localhost")) return false;
