@@ -135,7 +135,7 @@ test("la paginación está acotada y valida deporte y página", async () => {
   assert.equal(result.events.length, 1);
   assert.equal(result.events[0].homeScore, "2");
   await assert.rejects(
-    fetchSportsApiFixturePage({ SPORTAPI_API_KEY: "key" }, "2026-11-03", "mma", 1),
+    fetchSportsApiFixturePage({ SPORTAPI_API_KEY: "key" }, "2026-11-03", "cycling", 1),
     /no es válida/
   );
   await assert.rejects(
