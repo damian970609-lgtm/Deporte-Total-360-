@@ -292,9 +292,9 @@ function participantInfo(value, role = "") {
   if (!name) return null;
   return {
     name: name.slice(0, 100),
-    imageUrl: safeImageUrl(value.logo || value.image || value.thumbnailUrl || value.photo || value.picture),
+    imageUrl: safeImageUrl(value.imageUrl || value.logo || value.image || value.thumbnailUrl || value.photo || value.picture),
     country: textValue(value.nationality || value.country || value.affiliation).slice(0, 60),
-    role
+    role: textValue(value.role || role)
   };
 }
 
@@ -341,11 +341,11 @@ function unwrapEventObject(item) {
   const teamSplit = splitTeams(name);
   const homeTeam = teamName(homeRaw) || teamSplit.homeTeam;
   const awayTeam = teamName(awayRaw) || teamSplit.awayTeam;
-  const homeTeamLogo = safeImageUrl(
+  let homeTeamLogo = safeImageUrl(
     homeRaw?.logo || homeRaw?.image || homeRaw?.photo ||
     item.homeTeamLogo || item.homeLogo
   );
-  const awayTeamLogo = safeImageUrl(
+  let awayTeamLogo = safeImageUrl(
     awayRaw?.logo || awayRaw?.image || awayRaw?.photo ||
     item.awayTeamLogo || item.awayLogo
   );
@@ -371,6 +371,12 @@ function unwrapEventObject(item) {
     if (current && !current.imageUrl) current.imageUrl = awayTeamLogo;
   }
   const uniqueParticipants = collectParticipants(participants);
+  if (!homeTeamLogo && homeTeam) {
+    homeTeamLogo = uniqueParticipants.find(row => normalize(row.name) === normalize(homeTeam))?.imageUrl || "";
+  }
+  if (!awayTeamLogo && awayTeam) {
+    awayTeamLogo = uniqueParticipants.find(row => normalize(row.name) === normalize(awayTeam))?.imageUrl || "";
+  }
 
   const eventText = normalize([
     type, item.sport, item.discipline, item.category, name,
