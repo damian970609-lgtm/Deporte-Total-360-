@@ -46,6 +46,113 @@ test("health responde sin clave de proveedor", async () => {
   assert.equal(body.provider_configured, false);
 });
 
+
+test("catálogo en vivo devuelve vacío cuando no está configurado", async () => {
+  const response = await worker.fetch(request("/api/live/sources"), {});
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.configured, false);
+  assert.deepEqual(body.sources, []);
+});
+
+test("catálogo en vivo filtra por deporte, fecha y URL multimedia directa", async () => {
+  const catalog = [
+    {
+      id: "football-123-main",
+      eventId: "123",
+      sport: "football",
+      name: "Señal oficial",
+      url: "https://media.example/live.m3u8",
+      startsAt: "2026-11-03T19:00:00Z"
+    },
+    {
+      id: "football-124-page",
+      eventId: "124",
+      sport: "football",
+      name: "Página no válida",
+      url: "https://example.com/watch?id=124",
+      startsAt: "2026-11-03T20:00:00Z"
+    },
+    {
+      id: "basketball-125",
+      eventId: "125",
+      sport: "basketball",
+      name: "Otro deporte",
+      url: "https://media.example/basketball.mp4",
+      startsAt: "2026-11-03T21:00:00Z"
+    },
+    {
+      id: "football-126-old",
+      eventId: "126",
+      sport: "football",
+      name: "Fuera del rango",
+      url: "https://media.example/old.mp4",
+      startsAt: "2026-11-02T21:00:00Z"
+    },
+    {
+      id: "football-127-http",
+      eventId: "127",
+      sport: "football",
+      name: "HTTP no seguro",
+      url: "http://media.example/live.m3u8",
+      startsAt: "2026-11-03T19:00:00Z"
+    }
+  ];
+
+  const response = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-03&to=2026-11-03"),
+    { LIVE_STREAM_CATALOG_JSON: JSON.stringify(catalog) }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.configured, true);
+  assert.equal(body.count, 1);
+  assert.equal(body.sources[0].eventId, "123");
+  assert.equal(body.sources[0].url, "https://media.example/live.m3u8");
+});
+
+
+test("catálogo usa el día de Guyana al filtrar marcas UTC", async () => {
+  const catalog = [{
+    id: "football-128-local-date",
+    eventId: "128",
+    sport: "football",
+    name: "Señal autorizada",
+    url: "https://media.example/local-date.m3u8",
+    startsAt: "2026-11-04T02:00:00Z"
+  }];
+
+  const response = await worker.fetch(
+    request("/api/live/sources?sport=football&from=2026-11-03&to=2026-11-03&timezone=America%2FGuyana"),
+    { LIVE_STREAM_CATALOG_JSON: JSON.stringify(catalog) }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.count, 1);
+  assert.equal(body.sources[0].eventId, "128");
+});
+
+test("catálogo en vivo rechaza JSON mal formado", async () => {
+  const response = await worker.fetch(
+    request("/api/live/sources"),
+    { LIVE_STREAM_CATALOG_JSON: "{mal JSON" }
+  );
+
+  assert.equal(response.status, 503);
+});
+
+test("catálogo en vivo rechaza fechas de consulta imposibles", async () => {
+  const response = await worker.fetch(
+    request("/api/live/sources?from=2026-02-30"),
+    { LIVE_STREAM_CATALOG_JSON: "[]" }
+  );
+
+  assert.equal(response.status, 400);
+});
+
 test("ruta desconocida devuelve 404", async () => {
   const response = await worker.fetch(request("/desconocida"), {});
   assert.equal(response.status, 404);

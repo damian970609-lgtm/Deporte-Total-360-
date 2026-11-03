@@ -40,6 +40,39 @@ Ejemplos:
 Las rutas antiguas de fútbol (`/api/fixtures`, `/api/live`,
 `/api/leagues`, `/api/standings`) se mantienen para compatibilidad.
 
+## Catálogo de señales autorizadas para Deportes en vivo
+
+La ruta `GET /api/live/sources` entrega únicamente señales directas HTTPS
+`.m3u8` o `.mp4` que el propietario haya agregado al catálogo. No rastrea
+páginas, no extrae enlaces de reproductores y no evita DRM, inicios de sesión,
+geobloqueos ni restricciones del proveedor.
+
+Configura la variable/secret de Worker `LIVE_STREAM_CATALOG_JSON` con una lista
+JSON. Cada elemento debe usar el ID de deporte del catálogo, el ID del evento
+que devuelve API-Sports y una URL directa que tengas derecho a distribuir:
+
+```json
+[
+  {
+    "id": "football-fixture-123-main",
+    "eventId": "123",
+    "sport": "football",
+    "eventTitle": "Equipo local vs Equipo visitante",
+    "name": "Señal oficial",
+    "url": "https://media.example/live.m3u8",
+    "startsAt": "2026-11-03T19:00:00Z"
+  }
+]
+```
+
+Consulta por deporte y rango de fechas:
+`/api/live/sources?sport=football&from=2026-11-03&to=2026-11-09`.
+La APK combina ese catálogo con el estado real del evento: el botón de
+reproducción solo se habilita cuando la agenda confirma que el evento está
+en vivo. No pongas contraseñas ni tokens privados en URLs expuestas por esta
+ruta. Sin catálogo configurado, la ruta devuelve una lista vacía de forma
+segura.
+
 ## Configuración de Cloudflare
 
 Configura estos secretos/variables en el repositorio de GitHub usado por el
