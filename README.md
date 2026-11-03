@@ -73,6 +73,20 @@ en vivo. No pongas contraseñas ni tokens privados en URLs expuestas por esta
 ruta. Sin catálogo configurado, la ruta devuelve una lista vacía de forma
 segura.
 
+## Planificador central de transmisiones
+
+El Worker también ejecuta un planificador automático en la nube, independiente de cualquier teléfono:
+- Un Cron Trigger de Cloudflare ejecuta el planificador cada minuto.
+- El planificador consulta la agenda pública de MARCA en `https://www.marca.com/programacion-tv.html`, conserva el último resultado válido ante errores temporales y detecta el estado final cuando la fuente lo publica.
+- Cada cinco minutos combina las listas M3U y guías XMLTV integradas, cruza nombres de equipos con la programación EPG y ordena las señales en español antes de probar otros idiomas.
+- Diez minutos antes del inicio del evento empieza a comprobar manifiestos y segmentos directos. Una señal solo se publica si supera la comprobación disponible; las URL HTML, DRM, credenciales y geobloqueos no se eluden.
+- El estado común se guarda en un Durable Object SQLite. `GET /api/live/auto/schedule` entrega a todas las APK la misma agenda y las asignaciones verificadas, incluyendo hora final para liberar el reproductor.
+- Una guía EPG puede anunciar una emisión pero no crea el vídeo. Si ninguna señal coincide o responde, el evento sigue en espera y no se inventa una transmisión.
+
+El planificador continúa cuando el teléfono del propietario está apagado o la APK está desinstalada, una vez que este Worker actualizado esté desplegado en Cloudflare. Los teléfonos con la APK actualizada consultan el endpoint al estar conectados. Esta implementación no usa Firebase Cloud Messaging: no garantiza avisos ni reproducción automática con la aplicación cerrada o en segundo plano.
+
+El contenido de la página MARCA puede cambiar o impedir el acceso automatizado. En tal caso el estado publicado marca la fuente como desactualizada o no disponible y conserva solo eventos anteriores que aún no hayan vencido; la captura estructurada de MARCA debe verificarse en los registros del Worker tras el primer despliegue.
+
 ## Configuración de Cloudflare
 
 Configura estos secretos/variables en el repositorio de GitHub usado por el
@@ -82,7 +96,7 @@ workflow de despliegue:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `APISPORTS_KEY`
 
-El workflow publica `APISPORTS_KEY` en Cloudflare Worker mediante Wrangler.
+El workflow publica `APISPORTS_KEY` en Cloudflare Worker mediante Wrangler. El binding SQLite del planificador y su Cron Trigger se crean desde `wrangler.toml`.
 El Worker admite también `APIFOOTBALL_KEY` como nombre antiguo alternativo,
 pero el nombre recomendado es `APISPORTS_KEY`.
 
