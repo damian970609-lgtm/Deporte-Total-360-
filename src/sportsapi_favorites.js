@@ -303,8 +303,11 @@ export async function fetchSportsApiFixturePage(env, date, sport, page) {
   const selectedPage = Number(page);
   const config = FAVORITES_BY_ID.get(String(sport));
   const maxPage = 4;
-  if (!config || config.kind !== "fixtures" ||
-      !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(date || "")) ||
+  const dateText = String(date || "");
+  const dateEpoch = Date.parse(dateText + "T00:00:00Z");
+  const validDate = Number.isFinite(dateEpoch) &&
+    new Date(dateEpoch).toISOString().slice(0, 10) === dateText;
+  if (!config || config.kind !== "fixtures" || !validDate ||
       !Number.isInteger(selectedPage) || selectedPage < 1 || selectedPage > maxPage) {
     throw new Error("La fecha, deporte o página adicional no es válida.");
   }
