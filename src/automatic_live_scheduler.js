@@ -485,7 +485,7 @@ function extractMarcaStructuredEvents(html) {
   }
   // Respaldo para pequeños objetos JavaScript serializados.
   for (const match of String(html).matchAll(
-    /<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi
+    /<script\b[^>]*>([\s\S]*?)<\/script>/gi
   )) {
     const body = match[1];
     if (!/(startDate|startsAt|start_time|homeTeam|awayTeam)/i.test(body)) continue;
