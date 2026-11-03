@@ -188,6 +188,37 @@ test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () =>
 });
 
 
+
+test("normaliza escudos MARCA absolutos, protocol-relative y relativos", () => {
+  const html = `<script type="application/ld+json">
+    {
+      "@type":"SportsEvent",
+      "name":"Equipo Norte vs Equipo Sur",
+      "sport":"Football",
+      "startDate":"2026-11-03T19:30:00Z",
+      "homeTeam":{
+        "@type":"SportsTeam",
+        "name":"Equipo Norte",
+        "logo":{"url":"//img.example/norte.png"}
+      },
+      "awayTeam":{
+        "@type":"SportsTeam",
+        "name":"Equipo Sur",
+        "logo":{"contentUrl":"/assets/escudos/sur.svg"}
+      },
+      "competitors":[
+        {"@type":"Person","name":"Deportista Uno","image":{"src":"//img.example/uno.png"},"nationality":"Guyana"}
+      ]
+    }
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].homeTeamLogo, "https://img.example/norte.png");
+  assert.equal(events[0].awayTeamLogo, "https://www.marca.com/assets/escudos/sur.svg");
+  assert.equal(events[0].participants.find(item => item.name === "Deportista Uno").imageUrl,
+    "https://img.example/uno.png");
+});
+
 test("la agenda conserva participantes e imágenes en deportes individuales", () => {
   const html = `<script type="application/ld+json">
     {
