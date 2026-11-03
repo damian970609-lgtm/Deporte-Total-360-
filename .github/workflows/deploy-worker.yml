@@ -45,8 +45,10 @@ jobs:
           command: deploy
           secrets: |
             APISPORTS_KEY
+            SPORTAPI_API_KEY
         env:
           APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+          SPORTAPI_API_KEY: ${{ secrets.SPORTAPI_API_KEY }}
 
       - name: Verificar proveedor, partidos y sala pública
         run: |
@@ -63,7 +65,10 @@ jobs:
             throw new Error("El endpoint /health no confirmó que el Worker está online.");
           }
           if (health.provider_configured !== true) {
-            throw new Error("El Worker está online, pero APISPORTS_KEY no está configurada.");
+            throw new Error("El Worker está online, pero no tiene una clave de proveedor deportivo configurada.");
+          }
+          if (health.sportsapi_configured !== true) {
+            throw new Error("Falta SPORTAPI_API_KEY en los secretos Actions del repositorio del Worker.");
           }
           if (health.automatic_live_scheduler_configured !== true) {
             throw new Error("El planificador automático no está conectado al Worker.");
