@@ -1,4 +1,5 @@
 import { AutomaticLiveSchedule } from "./automatic_live_scheduler.js";
+import { fetchSportsApiStatistics, sportsApiFavoritesPayload } from "./sportsapi_favorites.js";
 export { AutomaticLiveSchedule };
 
 const HEADERS = {
@@ -936,6 +937,39 @@ export default {
       ));
     }
 
+    if (path === "/api/sportsapi/favorites") {
+      return json(sportsApiFavoritesPayload(), 200, {
+        "Cache-Control": "public, max-age=3600"
+      });
+    }
+
+    if (path === "/api/sportsapi/statistics") {
+      const params = incoming.searchParams;
+      const type = params.get("type") || "";
+      const id = params.get("id") || "";
+      if (![
+        "fixture-statistics", "fixture", "race-results",
+        "league-standings", "series-standings", "seasons"
+      ].includes(type)) {
+        return json({ error: "Tipo de estadística no permitido." }, 400);
+      }
+      try {
+        const result = await fetchSportsApiStatistics(env, type, id, {
+          season: params.get("season") || "",
+          session: params.get("session") || "",
+          kind: params.get("kind") || ""
+        });
+        return json(result, 200, {
+          "Cache-Control": type === "fixture-statistics" ? "public, max-age=30" : "public, max-age=600"
+        });
+      } catch (error) {
+        return json({
+          error: String(error?.message || "No se pudo consultar SportsAPI."),
+          provider_status: Number(error?.status || 502)
+        }, Number(error?.status || 502));
+      }
+    }
+
     if (path === "/api/live/sources") {
       return liveSourcesResponse(request, env);
     }
@@ -947,6 +981,8 @@ export default {
         provider_configured: Boolean(
           env.APISPORTS_KEY || env.APIFOOTBALL_KEY
         ),
+        sportsapi_configured: Boolean(env.SPORTAPI_API_KEY),
+        sportsapi_favorite_sports: 10,
         sports: Object.keys(SPORTS).length,
         live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON),
         automatic_live_scheduler_configured: Boolean(env.AUTOMATIC_LIVE_SCHEDULE)
