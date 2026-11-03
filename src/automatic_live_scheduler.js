@@ -432,8 +432,8 @@ function walkStructuredData(value, output, depth = 0) {
 }
 
 function parseEmbeddedJson(scriptBody) {
-  const source = String(scriptBody || "").trim().replace(/;\\s*$/, "");
-  const first = source.search(/[\\[{]/);
+  const source = String(scriptBody || "").trim().replace(/;\s*$/, "");
+  const first = source.search(/[{[]/);
   if (first < 0) return null;
   const stack = [];
   let inString = false;
@@ -442,7 +442,7 @@ function parseEmbeddedJson(scriptBody) {
     const character = source[index];
     if (inString) {
       if (escaped) escaped = false;
-      else if (character === "\\\\") escaped = true;
+      else if (character === "\\") escaped = true;
       else if (character === '"') inString = false;
       continue;
     }
@@ -473,7 +473,7 @@ function extractMarcaStructuredEvents(html) {
   // Algunos CMS publican el calendario como JSON de aplicación o como
   // estado hidratado (por ejemplo __NEXT_DATA__), no solo como JSON-LD.
   for (const match of String(html).matchAll(
-    /<script\\b([^>]*)>([\\s\\S]*?)<\\/script>/gi
+    /<script\b([^>]*)>([\s\S]*?)<\/script>/gi
   )) {
     const body = match[2] || "";
     if (body.length > 2 * 1024 * 1024 ||
