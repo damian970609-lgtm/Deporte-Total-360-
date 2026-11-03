@@ -781,6 +781,30 @@ function isAllowedLiveMediaUrl(value) {
 
 // Catálogo de señales directas suministradas por el propietario del servicio.
 // No busca, rastrea ni extrae enlaces de reproductores o páginas de terceros.
+function localCatalogDate(value, timeZone) {
+  const text = String(value || "").trim();
+  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(text)) {
+    return validDate(text) ? text : null;
+  }
+  const instant = new Date(text);
+  if (!Number.isFinite(instant.getTime())) return null;
+  try {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(instant)
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value])
+    );
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  } catch {
+    return null;
+  }
+}
+
 function liveSourcesResponse(request, env) {
   const rawCatalog = env.LIVE_STREAM_CATALOG_JSON;
   if (!rawCatalog) {
@@ -809,7 +833,11 @@ function liveSourcesResponse(request, env) {
   const sportFilter = (params.get("sport") || "").trim().toLowerCase();
   const from = params.get("from") || params.get("date") || "";
   const to = params.get("to") || from;
+  const timeZone = params.get("timezone") || "America/Guyana";
 
+  if (!validTimezone(timeZone)) {
+    return json({ error: "La zona horaria del catálogo no es válida." }, 400);
+  }
   if ((from && !validDate(from)) || (to && !validDate(to))) {
     return json({ error: "El rango de fechas del catálogo no es válido." }, 400);
   }
@@ -829,11 +857,11 @@ function liveSourcesResponse(request, env) {
     const name = String(entry.name || entry.title || "").trim();
     const url = String(entry.url || "").trim();
     const startsAt = String(entry.startsAt || entry.date || "").trim();
-    const eventDate = startsAt.slice(0, 10);
+    const eventDate = localCatalogDate(startsAt, timeZone);
 
     if (!SPORTS[sport] || !eventId || eventId.length > 120 ||
         !name || name.length > 100 || !isAllowedLiveMediaUrl(url) ||
-        !validDate(eventDate)) {
+        !eventDate) {
       continue;
     }
     if (sportFilter && sport !== sportFilter) continue;
