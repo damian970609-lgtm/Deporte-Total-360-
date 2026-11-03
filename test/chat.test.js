@@ -38,13 +38,15 @@ test("guarda mensajes y los devuelve en consultas posteriores", async () => {
   const { room } = makeRoom();
   const sent = await room.fetch(chatRequest("POST", {
     name: "Damian",
-    text: "¡Hola a todos!"
+    text: "¡Hola a todos!",
+    language: "en"
   }));
   const sentBody = await sent.json();
 
   assert.equal(sent.status, 201);
   assert.equal(sentBody.message.name, "Damian");
   assert.equal(sentBody.message.text, "¡Hola a todos!");
+  assert.equal(sentBody.message.language, "en");
   assert.ok(sentBody.message.id);
   assert.ok(sentBody.message.createdAt);
 
@@ -72,6 +74,23 @@ test("rechaza alias y mensajes vacíos o demasiado largos", async () => {
   assert.equal(shortName.status, 400);
   assert.equal(emptyText.status, 400);
   assert.equal(longText.status, 400);
+});
+
+test("mantiene español por defecto para clientes antiguos y valida el idioma", async () => {
+  const { room } = makeRoom();
+  const legacy = await room.fetch(chatRequest("POST", {
+    name: "Legacy",
+    text: "Mensaje antiguo"
+  }, "192.0.2.20"));
+  const invalid = await room.fetch(chatRequest("POST", {
+    name: "Persona",
+    text: "Hola",
+    language: "xx"
+  }, "192.0.2.21"));
+  const body = await legacy.json();
+  assert.equal(legacy.status, 201);
+  assert.equal(body.message.language, "es");
+  assert.equal(invalid.status, 400);
 });
 
 test("limita mensajes repetidos desde la misma dirección", async () => {
