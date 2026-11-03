@@ -85,7 +85,9 @@ function isFavouriteCompetition(sport, name) {
 }
 
 function statusValue(status) {
-  const type = String(status?.type || "").toLowerCase();
+  const type = String(
+    typeof status === "string" ? status : (status?.type || status?.description || "")
+  ).toLowerCase();
   if (type === "inprogress" || type === "live") return "live";
   if (type === "finished" || type === "ended") return "finished";
   if (type === "postponed") return "postponed";
@@ -248,7 +250,9 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
     .map(group => ({
       sport: group.sport,
       page: 1,
-      maxPage: group.sport === "football" ? 3 : 1
+      // Hasta 30 ligas por deporte seleccionado; evita recorrer el catálogo
+      // entero y limita las consultas adicionales dentro de la cuota diaria.
+      maxPage: 3
     }));
   return {
     source: "sportsapi",
@@ -262,7 +266,7 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
 export async function fetchSportsApiFixturePage(env, date, sport, page) {
   const selectedPage = Number(page);
   const config = FAVORITES_BY_ID.get(String(sport));
-  const maxPage = sport === "football" ? 3 : 1;
+  const maxPage = 3;
   if (!config || config.kind !== "fixtures" ||
       !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(date || "")) ||
       !Number.isInteger(selectedPage) || selectedPage < 1 || selectedPage > maxPage) {
