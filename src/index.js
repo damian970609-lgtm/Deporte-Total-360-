@@ -646,6 +646,95 @@ async function proxyToProvider(request, env, base, config, resource) {
   }
 }
 
+
+function dateInTimezone(date, timezone) {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function parseAuthorizedLiveCatalog(raw) {
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  return parsed.filter(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    if (typeof item.id !== "string" || !item.id.trim() || item.id.length > 120) return false;
+    if (typeof item.eventId !== "string" && typeof item.eventId !== "number") return false;
+    if (!String(item.eventId).trim() || String(item.eventId).length > 80) return false;
+    if (typeof item.sport !== "string" || !Object.hasOwn(SPORTS, item.sport)) return false;
+    if (typeof item.name !== "string" || !item.name.trim() || item.name.length > 120) return false;
+    if (typeof item.eventTitle !== "string" || !item.eventTitle.trim() || item.eventTitle.length > 180) return false;
+    if (typeof item.startsAt !== "string" || !Number.isFinite(Date.parse(item.startsAt))) return false;
+
+    const media = new URL(item.url);
+    if (media.protocol !== "https:" || media.username || media.password) return false;
+    if (!/\.(m3u8|mp4)$/i.test(media.pathname)) return false;
+    if (media.hostname === "localhost" || media.hostname.endsWith(".localhost")) return false;
+    return true;
+  }).map(item => ({
+    id: item.id.trim(),
+    eventId: String(item.eventId),
+    eventTitle: item.eventTitle.trim(),
+    sport: item.sport,
+    name: item.name.trim(),
+    url: item.url,
+    startsAt: new Date(item.startsAt).toISOString()
+  }));
+}
+
+function authorizedLiveSources(request, env) {
+  const url = new URL(request.url);
+  const sport = url.searchParams.get("sport") || "";
+  const from = url.searchParams.get("from") || "";
+  const to = url.searchParams.get("to") || "";
+  const timezone = url.searchParams.get("timezone") || "UTC";
+
+  if (!Object.hasOwn(SPORTS, sport)) {
+    return json({ error: "Debes indicar un deporte disponible" }, 400);
+  }
+  if (!validDate(from) || !validDate(to) || from > to) {
+    return json({ error: "Indica un rango from/to válido" }, 400);
+  }
+  if (!validTimezone(timezone)) {
+    return json({ error: "Zona horaria no válida" }, 400);
+  }
+
+  const startDay = Date.parse(`${from}T00:00:00Z`);
+  const endDay = Date.parse(`${to}T00:00:00Z`);
+  if ((endDay - startDay) / 86400000 > 7) {
+    return json({ error: "El rango del catálogo no puede superar 7 días" }, 400);
+  }
+
+  const catalog = parseAuthorizedLiveCatalog(env.LIVE_STREAM_CATALOG_JSON);
+  if (catalog === null) {
+    return json({ error: "LIVE_STREAM_CATALOG_JSON debe contener un arreglo JSON válido" }, 503);
+  }
+
+  const sources = catalog.filter(source => {
+    if (source.sport !== sport) return false;
+    const day = dateInTimezone(new Date(source.startsAt), timezone);
+    return day >= from && day <= to;
+  });
+
+  return json(
+    { configured: catalog.length > 0, count: sources.length, sources },
+    200,
+    { "Cache-Control": "no-store" }
+  );
+}
+
 function sportsCatalog() {
   return Object.entries(SPORTS).map(([id, sport]) => ({
     id,
@@ -817,6 +906,11 @@ export default {
         200,
         { "Cache-Control": "public, max-age=3600" }
       );
+    }
+
+    // Catálogo estático de señales que el propietario está autorizado a distribuir.
+    if (path === "/api/live/sources") {
+      return authorizedLiveSources(request, env);
     }
 
     // Rutas antiguas de fútbol: permanecen activas.
