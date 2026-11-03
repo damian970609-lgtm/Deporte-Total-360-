@@ -979,7 +979,7 @@ export default {
         service: "Deporte Total 360 API",
         status: "online",
         provider_configured: Boolean(
-          env.APISPORTS_KEY || env.APIFOOTBALL_KEY
+          env.APISPORTS_KEY || env.APIFOOTBALL_KEY || env.SPORTAPI_API_KEY
         ),
         sportsapi_configured: Boolean(env.SPORTAPI_API_KEY),
         sportsapi_favorite_sports: 10,
