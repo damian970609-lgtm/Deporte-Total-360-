@@ -184,6 +184,18 @@ test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () =>
   assert.equal(events[0].startsAt, Date.parse("2026-11-03T19:30:00Z"));
 });
 
+test("mantiene en agenda un evento que comenzó hace dos horas y sigue en curso", () => {
+  const html = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
+     "sport":"football","startDate":"2026-11-03T16:00:00Z",
+     "endDate":"2026-11-03T19:30:00Z"}
+  </script>`;
+  const now = Date.parse("2026-11-03T18:30:00Z");
+  const events = parseMarcaAgendaHtml(html, now);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].endsAt, Date.parse("2026-11-03T19:30:00Z"));
+});
+
 test("el parseo de MARCA convierte horarios locales Europe/Madrid", () => {
   const html = `<script type="application/ld+json">
     {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
