@@ -158,6 +158,8 @@ function mapRace(row) {
       id: "sportsapi-race-" + Number(row.id) + "-" + sessionId,
       providerId: Number(row.id),
       providerSessionId: sessionId,
+      providerSeriesId: Number(row.series?.id) || null,
+      providerSeasonId: Number(row.season?.id) || null,
       providerType: "race",
       sport: config.name,
       sportId: sport,
@@ -173,7 +175,11 @@ function mapRace(row) {
       startsAt: new Date(start).toISOString(),
       endsAt: new Date(start + 2 * 60 * 60 * 1000).toISOString(),
       status: statusValue(session.status || row.status),
-      statusLabel: String(session.status?.description || session.status?.type || row.status || "scheduled"),
+      statusLabel: String(
+        typeof session.status === "string"
+          ? session.status
+          : (session.status?.description || session.status?.type || row.status || "scheduled")
+      ),
       homeScore: "",
       awayScore: "",
       detailUrl: DETAIL_URL + "/"
