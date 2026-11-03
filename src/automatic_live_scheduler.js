@@ -406,7 +406,8 @@ function extractPlainTextAgendaEvents(html, now) {
 export function parseMarcaAgendaHtml(html, now = Date.now()) {
   const structured = extractMarcaStructuredEvents(html);
   const events = structured.length ? structured : extractPlainTextAgendaEvents(html, now);
-  const cutoff = now - 60 * 60 * 1000;
+  // Mantiene eventos en curso aunque hayan comenzado hace varias horas.
+  const cutoff = now - 6 * 60 * 60 * 1000;
   const horizon = now + MAX_AGENDA_AGE_MS;
   return events.filter(event =>
     event.startsAt >= cutoff && event.startsAt <= horizon &&
