@@ -1,6 +1,6 @@
 import {
   fetchSportsApiDailyAgenda,
-  fetchSportsApiFootballPage,
+  fetchSportsApiFixturePage,
   fetchSportsApiLiveScores,
   mergeSportsApiLiveScores,
   DAY_REFRESH_MS,
@@ -1010,38 +1010,44 @@ async function fetchSportsApiEvents(state, env, now) {
       now - Number(daily.refreshedAt || 0) >= DAY_REFRESH_MS) {
     daily = await fetchSportsApiDailyAgenda(env, now);
     await state.storage.put("sportsapi_daily_agenda", daily);
-    await state.storage.put("sportsapi_football_page_next", 1);
-    await state.storage.put("sportsapi_football_page_checked_at", now);
+    await state.storage.put("sportsapi_page_checked_at", now);
     rebuilt = true;
   }
 
-  // La página inicial cubre diez ligas por deporte. Las tres páginas
-  // siguientes de fútbol se descargan en minutos sucesivos para respetar
-  // el límite por minuto del plan y ampliar la cobertura de copas y fútbol femenino.
-  let pageNext = Number(await state.storage.get("sportsapi_football_page_next") || 4);
-  const pageCheckedAt = Number(await state.storage.get("sportsapi_football_page_checked_at") || 0);
-  if (!rebuilt && pageNext >= 1 && pageNext <= 3 && now - pageCheckedAt >= 60000) {
+  // Las páginas adicionales se descargan escalonadamente para no superar
+  // el límite por minuto de SportsAPI. Cada deporte solo se pagina cuando
+  // el proveedor informa meta.hasNextPage.
+  let pageQueue = Array.isArray(daily.pageQueue) ? [...daily.pageQueue] : [];
+  const pageCheckedAt = Number(await state.storage.get("sportsapi_page_checked_at") || 0);
+  if (!rebuilt && pageQueue.length && now - pageCheckedAt >= 60000) {
+    const task = pageQueue.shift();
     try {
-      const pageResult = await fetchSportsApiFootballPage(env, daily.date, pageNext);
+      const pageResult = await fetchSportsApiFixturePage(
+        env, daily.date, task.sport, task.page
+      );
       const merged = new Map((daily.events || []).map(item => [item.id, item]));
-      for (const event of pageResult.events) merged.set(event.id, event);
+      for (const event of pageResult.events || []) merged.set(event.id, event);
+      if (pageResult.hasNextPage && task.page < task.maxPage) {
+        pageQueue.push({ ...task, page: task.page + 1 });
+      }
       daily = {
         ...daily,
         events: Array.from(merged.values()).sort((a, b) =>
           Date.parse(a.startsAt) - Date.parse(b.startsAt)
         ),
-        pagesLoaded: pageNext
+        pageQueue
       };
-      await state.storage.put("sportsapi_daily_agenda", daily);
-      await state.storage.put("sportsapi_football_page_next", pageNext + 1);
-      await state.storage.put("sportsapi_football_page_checked_at", now);
-      rebuilt = true;
     } catch (error) {
-      // A page can be unavailable on a provider plan; keep the valid pages.
-      console.error("SportsAPI football page " + pageNext + ":", String(error?.message || error));
-      await state.storage.put("sportsapi_football_page_next", 4);
-      await state.storage.put("sportsapi_football_page_checked_at", now);
+      // Una página fallida no elimina los resultados que ya se descargaron.
+      console.error(
+        "SportsAPI pagination " + task.sport + " page " + task.page + ":",
+        String(error?.message || error)
+      );
+      daily = { ...daily, pageQueue };
     }
+    await state.storage.put("sportsapi_daily_agenda", daily);
+    await state.storage.put("sportsapi_page_checked_at", now);
+    rebuilt = true;
   }
 
   let live = await state.storage.get("sportsapi_live_scores") || null;
@@ -1051,7 +1057,7 @@ async function fetchSportsApiEvents(state, env, now) {
       live = { refreshedAt: now, events: liveEvents };
       await state.storage.put("sportsapi_live_scores", live);
     } catch (error) {
-      // The cached daily schedule remains usable when live scores are unavailable.
+      // La agenda diaria válida permanece disponible si fallan los marcadores en vivo.
       console.error("SportsAPI live scores:", String(error?.message || error));
     }
   }
