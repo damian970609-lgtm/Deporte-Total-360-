@@ -217,9 +217,9 @@ function madridWallClockToEpoch(year, monthIndex, day, hour, minute) {
 function parseDateTime(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
-  const explicitZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(raw);
+  const explicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
   if (!explicitZone) {
-    const wallClock = /^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?/.exec(raw);
+    const wallClock = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(raw);
     if (wallClock) {
       return madridWallClockToEpoch(
         Number(wallClock[1]), Number(wallClock[2]) - 1,
@@ -361,17 +361,17 @@ function extractMarcaStructuredEvents(html) {
 
 function extractPlainTextAgendaEvents(html, now) {
   const text = decodeEntities(String(html || "")
-    .replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi, " ")
-    .replace(/<style\\b[^>]*>[\\s\\S]*?<\\/style>/gi, " ")
-    .replace(/<[^>]+>/g, "\\n"))
-    .replace(/\\u00a0/g, " ");
-  const lines = text.split(/[\\r\\n]+/).map(line => line.replace(/\\s+/g, " ").trim()).filter(Boolean);
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, "\n"))
+    .replace(/\u00a0/g, " ");
+  const lines = text.split(/[\r\n]+/).map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean);
   const madrid = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit"
   }).formatToParts(new Date(now)).map(part => [part.type, Number(part.value)]));
   const output = [];
-  const pairPattern = /([A-ZÀ-Ý0-9][^|•]{2,75}?)\\s+(?:vs?\\.?|versus|contra|[-–—])\\s+([A-ZÀ-Ý0-9][^|•]{2,75})/i;
-  const timePattern = /\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b/;
+  const pairPattern = /([A-ZÀ-Ý0-9][^|•]{2,75}?)\s+(?:vs?\.?|versus|contra|[-–—])\s+([A-ZÀ-Ý0-9][^|•]{2,75})/i;
+  const timePattern = /\b([01]?\d|2[0-3]):([0-5]\d)\b/;
   for (let index = 0; index < lines.length; index++) {
     const time = timePattern.exec(lines[index]);
     if (!time) continue;
@@ -581,7 +581,7 @@ async function probeCandidate(candidate, depth = 0) {
     const lower = candidate.url.toLowerCase();
     if (lower.includes(".m3u8")) {
       if (!body.trimStart().startsWith("#EXTM3U")) return false;
-      const lines = body.replace(/\\r/g, "").split("\\n").map(line => line.trim());
+      const lines = body.replace(/\r/g, "").split("\n").map(line => line.trim());
       let target = null;
       for (const line of lines) {
         if (!line || line.startsWith("#")) continue;
@@ -590,7 +590,7 @@ async function probeCandidate(candidate, depth = 0) {
       }
       if (!target) return false;
       const resolved = new URL(target, candidate.url).toString();
-      if (depth === 0 && /\\.m3u8(?:$|\\?)/i.test(resolved)) {
+      if (depth === 0 && /\.m3u8(?:$|\?)/i.test(resolved)) {
         return await probeCandidate({ ...candidate, url: resolved }, depth + 1);
       }
       const segment = await fetch(resolved, {
@@ -601,7 +601,7 @@ async function probeCandidate(candidate, depth = 0) {
       const chunk = await segment.arrayBuffer();
       return chunk.byteLength > 0;
     }
-    if (lower.includes(".mpd")) return /<MPD\\b/i.test(body);
+    if (lower.includes(".mpd")) return /<MPD\b/i.test(body);
     return true;
   } catch {
     return false;
