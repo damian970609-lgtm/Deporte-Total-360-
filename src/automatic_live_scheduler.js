@@ -711,7 +711,7 @@ async function getFcmAccessToken(serviceAccount) {
   return cachedFcmAccessToken;
 }
 
-async function sendFcmMessage(serviceAccount, token, event) {
+async function sendFcmMessage(serviceAccount, event) {
   const accessToken = await getFcmAccessToken(serviceAccount);
   const sport = String(event.event.sport || "Deporte");
   const home = String(event.event.homeTeam || "");
@@ -728,7 +728,7 @@ async function sendFcmMessage(serviceAccount, token, event) {
       },
       body: JSON.stringify({
         message: {
-          token,
+          topic: "deporte_total_360_live",
           notification: {
             title: "TRANSMISIÓN DISPONIBLE · " + sport,
             body: teams + " ya tiene una señal comprobada. Toca para abrir Deportes en vivo."
@@ -761,56 +761,39 @@ async function dispatchLiveNotifications(state, env, snapshot, now) {
   try {
     serviceAccount = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON);
   } catch {
-    console.error("FCM_SERVICE_ACCOUNT_JSON no contiene JSON válido");
+    console.error('FCM_SERVICE_ACCOUNT_JSON no contiene JSON válido');
     return;
   }
-  const devices = await state.storage.get("device_tokens") || {};
-  const tokens = Object.keys(devices);
-  if (!tokens.length) return;
-  const progress = await state.storage.get("notification_progress") || {};
+  const progress = await state.storage.get('notification_progress') || {};
   const events = (snapshot.events || []).filter(item =>
-    item.state === "verified" &&
+    item.state === 'verified' &&
     item.sources?.length &&
-    item.event?.status !== "finished" &&
+    item.event?.status !== 'finished' &&
     Date.parse(item.event?.startsAt) <= now + 10 * 60 * 1000 &&
     Date.parse(item.removeAt) > now
   );
 
   for (const item of events) {
-    const eventId = String(item.event.id || "");
-    if (!eventId) continue;
-    const record = progress[eventId] || { sentTokens: [] };
-    const sent = new Set(record.sentTokens || []);
-    const pending = tokens.filter(token => !sent.has(token)).slice(0, 25);
-    if (!pending.length) continue;
-
-    const results = await Promise.all(pending.map(async token => {
-      try {
-        return { token, ...(await sendFcmMessage(serviceAccount, token, item)) };
-      } catch (error) {
-        console.error("No se pudo enviar una notificación FCM:", String(error?.message || error));
-        return { token, delivered: false, invalid: false };
+    const eventId = String(item.event.id || '');
+    if (!eventId || progress[eventId]?.sent) continue;
+    try {
+      const result = await sendFcmMessage(serviceAccount, item);
+      if (result.delivered) {
+        progress[eventId] = { sent: true, sentAt: now };
       }
-    }));
-    for (const result of results) {
-      if (result.delivered || result.invalid) sent.add(result.token);
-      if (result.invalid) delete devices[result.token];
+    } catch (error) {
+      console.error('No se pudo enviar una notificación FCM:', String(error?.message || error));
     }
-    record.sentTokens = Array.from(sent);
-    record.updatedAt = now;
-    progress[eventId] = record;
   }
 
   for (const [eventId, record] of Object.entries(progress)) {
     const current = (snapshot.events || []).find(item => String(item.event?.id) === eventId);
-    if (!current && now - Number(record.updatedAt || 0) > 48 * 60 * 60 * 1000) {
+    if (!current && now - Number(record.sentAt || 0) > 48 * 60 * 60 * 1000) {
       delete progress[eventId];
     }
   }
-  await state.storage.put("device_tokens", devices);
-  await state.storage.put("notification_progress", progress);
+  await state.storage.put('notification_progress', progress);
 }
-
 async function refreshState(state, env, now = Date.now()) {
   const previous = await state.storage.get("snapshot") || null;
   let events;
@@ -951,53 +934,10 @@ export class AutomaticLiveSchedule {
     this.state = state;
     this.env = env;
     this.refreshPromise = null;
-    this.deviceRegistrationAt = new Map();
   }
 
   async fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === "/device/register" || url.pathname === "/device/unregister") {
-      if (request.method !== "POST") {
-        return json({ error: "Método no permitido" }, 405);
-      }
-      if (!(request.headers.get("Content-Type") || "").toLowerCase().includes("application/json")) {
-        return json({ error: "Se requiere application/json" }, 415);
-      }
-      let payload;
-      try {
-        payload = await request.json();
-      } catch {
-        return json({ error: "JSON no válido" }, 400);
-      }
-      const token = typeof payload?.token === "string" ? payload.token.trim() : "";
-      if (token.length < 100 || token.length > 4096) {
-        return json({ error: "Token FCM no válido" }, 400);
-      }
-      const devices = await this.state.storage.get("device_tokens") || {};
-      if (url.pathname === "/device/unregister") {
-        delete devices[token];
-        await this.state.storage.put("device_tokens", devices);
-        return json({ registered: false });
-      }
-      const clientKey = request.headers.get("CF-Connecting-IP") || "anonymous";
-      const now = Date.now();
-      const previous = this.deviceRegistrationAt.get(clientKey) || 0;
-      if (now - previous < 3000) {
-        return json({ error: "Espera antes de volver a registrar el dispositivo" }, 429);
-      }
-      this.deviceRegistrationAt.set(clientKey, now);
-      if (Object.keys(devices).length >= 5000 && !devices[token]) {
-        return json({ error: "Se alcanzó el límite de dispositivos registrados" }, 429);
-      }
-      devices[token] = {
-        platform: payload.platform === "ios" ? "ios" : "android",
-        language: String(payload.language || "es").slice(0, 8),
-        registeredAt: devices[token]?.registeredAt || new Date().toISOString(),
-        lastSeenAt: new Date().toISOString()
-      };
-      await this.state.storage.put("device_tokens", devices);
-      return json({ registered: true, deviceCount: Object.keys(devices).length });
-    }
     if (url.pathname === "/snapshot" && request.method === "GET") {
       const snapshot = await this.state.storage.get("snapshot");
       if (!snapshot) {
