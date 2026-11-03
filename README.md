@@ -8,6 +8,7 @@ nunca debe incluirse en el APK ni en el código Flutter.
 
 - `GET /health` — estado del Worker y número de deportes configurados.
 - `GET /api/sports` — catálogo de deportes, identificadores y recursos disponibles.
+- `GET /api/live/sources?sport=football&from=YYYY-MM-DD&to=YYYY-MM-DD&timezone=America%2FGuyana` — catálogo de señales HLS/MP4 directas autorizadas, filtrado por deporte y fecha.
 - `GET /api/chat/messages` — devuelve los últimos mensajes de la sala pública.
 - `POST /api/chat/messages` — publica un mensaje `{ "name": "Alias", "text": "Mensaje" }` en esa misma sala.
 
@@ -52,6 +53,34 @@ workflow de despliegue:
 El workflow publica `APISPORTS_KEY` en Cloudflare Worker mediante Wrangler.
 El Worker admite también `APIFOOTBALL_KEY` como nombre antiguo alternativo,
 pero el nombre recomendado es `APISPORTS_KEY`.
+
+## Catálogo de señales en vivo
+
+El endpoint `GET /api/live/sources` lee el catálogo desde la variable/secret
+`LIVE_STREAM_CATALOG_JSON`. Configúrala en Cloudflare Workers (por ejemplo,
+con `npx wrangler secret put LIVE_STREAM_CATALOG_JSON`). Su valor debe ser un
+arreglo JSON con una entrada por señal que tengas autorización para distribuir:
+
+```json
+[
+  {
+    "id": "fixture-123-main",
+    "eventId": "123",
+    "eventTitle": "Equipo local vs Equipo visitante",
+    "sport": "football",
+    "name": "Señal principal",
+    "url": "https://tu-dominio-autorizado.example/live.m3u8",
+    "startsAt": "2026-11-03T19:00:00Z"
+  }
+]
+```
+
+Usa el ID de evento real devuelto por la agenda API-Sports y el identificador
+de deporte del catálogo (`football`, `nba`, etc.). Solo se aceptan URLs HTTPS
+directas con extensión `.m3u8` o `.mp4`; se descartan páginas web, RTMP, DASH,
+URLs con credenciales y entradas fuera del rango solicitado. Si la variable no
+está configurada, la API responde con una lista vacía. El Worker no extrae
+señales de páginas de terceros ni elude DRM, autenticación o restricciones.
 
 ## API-Sports: cobertura y cuotas
 
