@@ -290,7 +290,7 @@ function unwrapEventObject(item) {
     item.competition || item.league || item.superEvent || item.tournament || item.eventSeries
   );
   const status = normalize(textValue(item.eventStatus || item.status || item.state));
-  const finished = /finished|end|final|terminad|finalizad|eventcancelled|eventpostponed|cancelad|suspendid/.test(status) ||
+  const finished = /finished|end|final|terminad|finalizad|eventcompleted|eventcancelled|eventpostponed|cancelad|suspendid/.test(status) ||
     /\b(finalizado|finalizada|terminado|terminada|full time|ft|cancelado|cancelada|suspendido|suspendida)\b/.test(normalize(item.description));
   const sport = eventSport({
     sport: item.sport, discipline: item.discipline,
@@ -375,7 +375,8 @@ function extractPlainTextAgendaEvents(html, now) {
   for (let index = 0; index < lines.length; index++) {
     const time = timePattern.exec(lines[index]);
     if (!time) continue;
-    const context = lines.slice(index, index + 3).join(" · ").slice(0, 250);
+    const context = lines.slice(Math.max(0, index - 2), index + 3)
+      .join(" · ").slice(0, 300);
     const pair = pairPattern.exec(context);
     if (!pair) continue;
     const hour = Number(time[1]);
@@ -385,16 +386,20 @@ function extractPlainTextAgendaEvents(html, now) {
     );
     if (startsAt < now - 5 * 60 * 60 * 1000) startsAt += 24 * 60 * 60 * 1000;
     const title = pair[1].trim() + " vs " + pair[2].trim();
+    const contextNormalized = normalize(context);
+    const finished = /\b(finalizado|finalizada|terminado|terminada|finished|full time|ft|cancelado|cancelada|suspendido|suspendida)\b/.test(contextNormalized);
+    const sport = eventSport({ description: context });
+    const durationHours = sport === "Tenis" ? 4 : 3;
     output.push({
       id: stableId(title, startsAt),
       title: title.slice(0, 180),
-      sport: "Fútbol",
+      sport,
       competition: "",
       homeTeam: pair[1].trim().slice(0, 80),
       awayTeam: pair[2].trim().slice(0, 80),
       startsAt,
-      endsAt: startsAt + DEFAULT_EVENT_DURATION_MS,
-      status: "scheduled",
+      endsAt: startsAt + durationHours * 60 * 60 * 1000,
+      status: finished ? "finished" : "scheduled",
       detailUrl: MARCA_AGENDA_URL
     });
   }
