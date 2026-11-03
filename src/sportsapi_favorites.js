@@ -288,7 +288,7 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
       page: 1,
       // Hasta 40 ligas por deporte seleccionado; evita recorrer el catálogo
       // entero y limita las consultas adicionales dentro de la cuota diaria.
-      maxPage: 4
+      maxPage: 3
     }));
   return {
     source: "sportsapi",
@@ -302,7 +302,7 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
 export async function fetchSportsApiFixturePage(env, date, sport, page) {
   const selectedPage = Number(page);
   const config = FAVORITES_BY_ID.get(String(sport));
-  const maxPage = 4;
+  const maxPage = 3;
   const dateText = String(date || "");
   const dateEpoch = Date.parse(dateText + "T00:00:00Z");
   const validDate = Number.isFinite(dateEpoch) &&
