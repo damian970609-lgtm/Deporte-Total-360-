@@ -765,6 +765,99 @@ export class PublicChatRoom {
   }
 }
 
+
+function isAllowedLiveMediaUrl(value) {
+  try {
+    const uri = new URL(String(value || "").trim());
+    const path = uri.pathname.toLowerCase();
+    return uri.protocol === "https:" &&
+      !uri.username &&
+      !uri.password &&
+      (path.endsWith(".m3u8") || path.endsWith(".mp4"));
+  } catch {
+    return false;
+  }
+}
+
+// Catálogo de señales directas suministradas por el propietario del servicio.
+// No busca, rastrea ni extrae enlaces de reproductores o páginas de terceros.
+function liveSourcesResponse(request, env) {
+  const rawCatalog = env.LIVE_STREAM_CATALOG_JSON;
+  if (!rawCatalog) {
+    return json(
+      { configured: false, count: 0, sources: [] },
+      200,
+      { "Cache-Control": "public, max-age=15" }
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawCatalog);
+  } catch {
+    return json({ error: "El catálogo de señales no contiene JSON válido." }, 503);
+  }
+
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : (parsed && Array.isArray(parsed.sources) ? parsed.sources : null);
+  if (!entries) {
+    return json({ error: "El catálogo debe ser una lista JSON de señales." }, 503);
+  }
+
+  const params = new URL(request.url).searchParams;
+  const sportFilter = (params.get("sport") || "").trim().toLowerCase();
+  const from = params.get("from") || params.get("date") || "";
+  const to = params.get("to") || from;
+
+  if ((from && !validDate(from)) || (to && !validDate(to))) {
+    return json({ error: "El rango de fechas del catálogo no es válido." }, 400);
+  }
+  if (sportFilter && !SPORTS[sportFilter]) {
+    return json({
+      error: "Deporte no disponible para el catálogo.",
+      available: Object.keys(SPORTS)
+    }, 400);
+  }
+
+  const sources = [];
+  for (const entry of entries.slice(0, 500)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+
+    const sport = String(entry.sport || entry.sportId || "").trim().toLowerCase();
+    const eventId = String(entry.eventId || entry.fixtureId || "").trim();
+    const name = String(entry.name || entry.title || "").trim();
+    const url = String(entry.url || "").trim();
+    const startsAt = String(entry.startsAt || entry.date || "").trim();
+    const eventDate = startsAt.slice(0, 10);
+
+    if (!SPORTS[sport] || !eventId || eventId.length > 120 ||
+        !name || name.length > 100 || !isAllowedLiveMediaUrl(url) ||
+        !validDate(eventDate)) {
+      continue;
+    }
+    if (sportFilter && sport !== sportFilter) continue;
+    if (from && eventDate < from) continue;
+    if (to && eventDate > to) continue;
+
+    sources.push({
+      id: String(entry.id || `${sport}:${eventId}:${name}`).slice(0, 180),
+      eventId,
+      eventTitle: String(entry.eventTitle || entry.fixtureTitle || "").slice(0, 180),
+      sport,
+      name,
+      url,
+      startsAt
+    });
+  }
+
+  return json(
+    { configured: true, count: sources.length, sources },
+    200,
+    { "Cache-Control": "public, max-age=20" }
+  );
+}
+
 export default {
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
@@ -800,6 +893,10 @@ export default {
       );
     }
 
+    if (path === "/api/live/sources") {
+      return liveSourcesResponse(request, env);
+    }
+
     if (path === "/health") {
       return json({
         service: "Deporte Total 360 API",
@@ -807,7 +904,8 @@ export default {
         provider_configured: Boolean(
           env.APISPORTS_KEY || env.APIFOOTBALL_KEY
         ),
-        sports: Object.keys(SPORTS).length
+        sports: Object.keys(SPORTS).length,
+        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON)
       });
     }
 
