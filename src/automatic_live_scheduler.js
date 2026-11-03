@@ -649,6 +649,168 @@ async function fetchMarcaAgenda() {
   return events;
 }
 
+
+let cachedFcmAccessToken = null;
+let cachedFcmAccessTokenExpiresAt = 0;
+
+function base64Url(value) {
+  const bytes = typeof value === "string"
+    ? new TextEncoder().encode(value)
+    : value;
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+async function getFcmAccessToken(serviceAccount) {
+  if (cachedFcmAccessToken && Date.now() < cachedFcmAccessTokenExpiresAt - 60000) {
+    return cachedFcmAccessToken;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = base64Url(JSON.stringify({
+    iss: serviceAccount.client_email,
+    scope: "https://www.googleapis.com/auth/firebase.messaging",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600
+  }));
+  const unsigned = header + "." + claims;
+  const pem = String(serviceAccount.private_key || "")
+    .replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "");
+  if (!pem || !serviceAccount.client_email || !serviceAccount.project_id) {
+    throw new Error("La cuenta de servicio FCM está incompleta");
+  }
+  const binary = atob(pem);
+  const keyBytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    keyBytes,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    new TextEncoder().encode(unsigned)
+  );
+  const assertion = unsigned + "." + base64Url(new Uint8Array(signature));
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion
+    })
+  });
+  if (!response.ok) throw new Error("OAuth FCM respondió HTTP " + response.status);
+  const body = await response.json();
+  cachedFcmAccessToken = body.access_token;
+  cachedFcmAccessTokenExpiresAt = Date.now() + Number(body.expires_in || 3600) * 1000;
+  return cachedFcmAccessToken;
+}
+
+async function sendFcmMessage(serviceAccount, token, event) {
+  const accessToken = await getFcmAccessToken(serviceAccount);
+  const sport = String(event.event.sport || "Deporte");
+  const home = String(event.event.homeTeam || "");
+  const away = String(event.event.awayTeam || "");
+  const teams = home && away ? home + " vs " + away : String(event.event.title || "Evento deportivo");
+  const response = await fetch(
+    "https://fcm.googleapis.com/v1/projects/" +
+      encodeURIComponent(serviceAccount.project_id) + "/messages:send",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + accessToken,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        message: {
+          token,
+          notification: {
+            title: "TRANSMISIÓN DISPONIBLE · " + sport,
+            body: teams + " ya tiene una señal comprobada. Toca para abrir Deportes en vivo."
+          },
+          data: {
+            eventId: String(event.event.id),
+            route: "live"
+          },
+          android: {
+            priority: "HIGH",
+            notification: {
+              channel_id: "sports_live_events",
+              click_action: "FLUTTER_NOTIFICATION_CLICK"
+            }
+          }
+        }
+      })
+    }
+  );
+  if (response.ok) return { delivered: true, invalid: false };
+  const details = await response.text();
+  const invalid = response.status === 404 ||
+    /UNREGISTERED|registration-token-not-registered/i.test(details);
+  return { delivered: false, invalid };
+}
+
+async function dispatchLiveNotifications(state, env, snapshot, now) {
+  if (!env.FCM_SERVICE_ACCOUNT_JSON) return;
+  let serviceAccount;
+  try {
+    serviceAccount = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON);
+  } catch {
+    console.error("FCM_SERVICE_ACCOUNT_JSON no contiene JSON válido");
+    return;
+  }
+  const devices = await state.storage.get("device_tokens") || {};
+  const tokens = Object.keys(devices);
+  if (!tokens.length) return;
+  const progress = await state.storage.get("notification_progress") || {};
+  const events = (snapshot.events || []).filter(item =>
+    item.state === "verified" &&
+    item.sources?.length &&
+    item.event?.status !== "finished" &&
+    Date.parse(item.event?.startsAt) <= now + 10 * 60 * 1000 &&
+    Date.parse(item.removeAt) > now
+  );
+
+  for (const item of events) {
+    const eventId = String(item.event.id || "");
+    if (!eventId) continue;
+    const record = progress[eventId] || { sentTokens: [] };
+    const sent = new Set(record.sentTokens || []);
+    const pending = tokens.filter(token => !sent.has(token)).slice(0, 25);
+    if (!pending.length) continue;
+
+    const results = await Promise.all(pending.map(async token => {
+      try {
+        return { token, ...(await sendFcmMessage(serviceAccount, token, item)) };
+      } catch (error) {
+        console.error("No se pudo enviar una notificación FCM:", String(error?.message || error));
+        return { token, delivered: false, invalid: false };
+      }
+    }));
+    for (const result of results) {
+      if (result.delivered || result.invalid) sent.add(result.token);
+      if (result.invalid) delete devices[result.token];
+    }
+    record.sentTokens = Array.from(sent);
+    record.updatedAt = now;
+    progress[eventId] = record;
+  }
+
+  for (const [eventId, record] of Object.entries(progress)) {
+    const current = (snapshot.events || []).find(item => String(item.event?.id) === eventId);
+    if (!current && now - Number(record.updatedAt || 0) > 48 * 60 * 60 * 1000) {
+      delete progress[eventId];
+    }
+  }
+  await state.storage.put("device_tokens", devices);
+  await state.storage.put("notification_progress", progress);
+}
+
 async function refreshState(state, env, now = Date.now()) {
   const previous = await state.storage.get("snapshot") || null;
   let events;
@@ -780,6 +942,7 @@ async function refreshState(state, env, now = Date.now()) {
     events: output
   };
   await state.storage.put("snapshot", snapshot);
+  await dispatchLiveNotifications(state, env, snapshot, now);
   return snapshot;
 }
 
@@ -792,6 +955,41 @@ export class AutomaticLiveSchedule {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/device/register" || url.pathname === "/device/unregister") {
+      if (request.method !== "POST") {
+        return json({ error: "Método no permitido" }, 405);
+      }
+      if (!(request.headers.get("Content-Type") || "").toLowerCase().includes("application/json")) {
+        return json({ error: "Se requiere application/json" }, 415);
+      }
+      let payload;
+      try {
+        payload = await request.json();
+      } catch {
+        return json({ error: "JSON no válido" }, 400);
+      }
+      const token = typeof payload?.token === "string" ? payload.token.trim() : "";
+      if (token.length < 100 || token.length > 4096) {
+        return json({ error: "Token FCM no válido" }, 400);
+      }
+      const devices = await this.state.storage.get("device_tokens") || {};
+      if (url.pathname === "/device/unregister") {
+        delete devices[token];
+        await this.state.storage.put("device_tokens", devices);
+        return json({ registered: false });
+      }
+      if (Object.keys(devices).length >= 5000 && !devices[token]) {
+        return json({ error: "Se alcanzó el límite de dispositivos registrados" }, 429);
+      }
+      devices[token] = {
+        platform: payload.platform === "ios" ? "ios" : "android",
+        language: String(payload.language || "es").slice(0, 8),
+        registeredAt: devices[token]?.registeredAt || new Date().toISOString(),
+        lastSeenAt: new Date().toISOString()
+      };
+      await this.state.storage.put("device_tokens", devices);
+      return json({ registered: true, deviceCount: Object.keys(devices).length });
+    }
     if (url.pathname === "/snapshot" && request.method === "GET") {
       const snapshot = await this.state.storage.get("snapshot");
       if (!snapshot) {
