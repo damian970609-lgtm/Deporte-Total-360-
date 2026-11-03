@@ -693,6 +693,14 @@ async function refreshState(state, env, now = Date.now()) {
 
   const priorProbes = await state.storage.get("probe_cache") || {};
   const probeCache = { ...priorProbes };
+  for (const [url, value] of Object.entries(probeCache)) {
+    if (!value || now - Number(value.checkedAt || 0) > 24 * 60 * 60 * 1000) {
+      delete probeCache[url];
+    }
+  }
+  // Reservamos margen dentro del límite de subsolicitudes del Worker.
+  // Una prueba HLS puede requerir manifiesto, variante y segmento.
+  let probeBudget = 5;
   const output = [];
   for (const event of events) {
     const candidates = catalog?.candidatesByEvent?.[event.id] || [];
@@ -712,6 +720,8 @@ async function refreshState(state, env, now = Date.now()) {
             }
             continue;
           }
+          if (probeBudget <= 0) break;
+          probeBudget--;
           const available = await probeCandidate(candidate);
           probeCache[candidate.url] = { available, checkedAt: now };
           if (available) {
