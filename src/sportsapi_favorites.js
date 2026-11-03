@@ -241,6 +241,23 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
   };
 }
 
+export async function fetchSportsApiFootballPage(env, date, page) {
+  const selectedPage = Number(page);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ||
+      !Number.isInteger(selectedPage) || selectedPage < 1 || selectedPage > 3) {
+    throw new Error("La fecha o página adicional de fútbol no es válida.");
+  }
+  const result = await providerGet(env, "/fixtures", {
+    sport: "football", date, page: selectedPage
+  });
+  const rows = Array.isArray(result.data) ? result.data : [];
+  return {
+    page: selectedPage,
+    hasNextPage: result.meta?.hasNextPage === true,
+    events: rows.map(mapFixture).filter(Boolean)
+  };
+}
+
 export async function fetchSportsApiLiveScores(env) {
   const result = await providerGet(env, "/livescores");
   return (Array.isArray(result.data) ? result.data : []).map(mapFixture).filter(Boolean);
