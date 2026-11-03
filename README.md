@@ -122,7 +122,7 @@ segura.
 
 El Worker también ejecuta un planificador automático en la nube, independiente de cualquier teléfono:
 - Un Cron Trigger de Cloudflare ejecuta el planificador cada minuto.
-- El planificador consulta la agenda pública de MARCA en `https://www.marca.com/programacion-tv.html`, conserva el último resultado válido ante errores temporales y detecta el estado final cuando la fuente lo publica.
+- Cuando `SPORTAPI_API_KEY` está configurada, el planificador consulta SportsAPI.app para los diez deportes favoritos, filtra las competiciones seleccionadas y conserva el último calendario válido ante errores temporales. MARCA se consulta únicamente como respaldo cuando la nueva clave no está configurada.
 - Cada cinco minutos combina las listas M3U y guías XMLTV integradas, cruza nombres de equipos con la programación EPG y ordena las señales en español antes de probar otros idiomas.
 - Diez minutos antes del inicio del evento empieza a comprobar manifiestos y segmentos directos. Una señal solo se publica si supera la comprobación disponible; las URL HTML, DRM, credenciales y geobloqueos no se eluden.
 - El estado común se guarda en un Durable Object SQLite. `GET /api/live/auto/schedule` entrega a todas las APK la misma agenda y las asignaciones verificadas, incluyendo hora final para liberar el reproductor.
@@ -148,13 +148,9 @@ El workflow publica `SPORTAPI_API_KEY` y, cuando esté configurada, `APISPORTS_K
 El Worker admite también `APIFOOTBALL_KEY` como nombre antiguo alternativo,
 pero el nombre recomendado es `APISPORTS_KEY`.
 
-## API-Sports: cobertura y cuotas
+## Cobertura, cuotas y caché de proveedores
 
-La aplicación solicita cada deporte a su API independiente. Una respuesta
-vacía no significa que la pantalla se haya detenido: la liga, la temporada o
-el deporte pueden no tener eventos/datos disponibles en ese momento. La
-cobertura y los endpoints dependen de la suscripción habilitada para cada API.
-El Worker conserva respuestas en caché para reducir consultas.
+SportsAPI.app se consulta por los diez deportes favoritos. Las primeras páginas se cargan una vez por jornada UTC; las páginas adicionales se consultan escalonadamente y los marcadores en vivo globales cada 30 minutos. Las pantallas de estadísticas generan consultas adicionales y también consumen cuota. Una respuesta vacía puede significar que no hay eventos ese día, que la competición no está dentro de la cobertura de la suscripción o que el proveedor no tiene datos para esa fecha. El Worker conserva la agenda y los marcadores en caché para reducir llamadas. Las rutas API-Sports antiguas permanecen disponibles únicamente para compatibilidad.
 
 ## Chat público
 
