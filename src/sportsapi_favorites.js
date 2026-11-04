@@ -77,6 +77,18 @@ const COMPETITION_ALIASES = {
   "UEFA European Championship": ["European Championship", "UEFA Euro"],
   "FIFA World Cup": ["World Cup Men", "FIFA World Cup Men"],
   "FIFA Women's World Cup": ["Women's World Cup", "World Cup Women"],
+  "World Cup Qualifiers": [
+    "World Cup Qualification", "FIFA World Cup Qualification",
+    "World Cup Qualifying", "FIFA World Cup Qualifying"
+  ],
+  "Women's World Cup Qualifiers": [
+    "Women's World Cup Qualification", "FIFA Women's World Cup Qualification",
+    "Women's World Cup Qualifying", "FIFA Women's World Cup Qualifying"
+  ],
+  "International Friendly": [
+    "International Friendlies", "Friendly International", "Friendlies"
+  ],
+  "Vuelta a España": ["La Vuelta", "Vuelta a Espana"],
   "FIFA Club World Cup": ["Club World Cup"],
   "Women's Super League": ["FA Women's Super League", "WSL"],
   "Frauen-Bundesliga": ["Google Pixel Frauen Bundesliga"],
@@ -256,26 +268,44 @@ function utcDate(now) {
   return new Date(now).toISOString().slice(0, 10);
 }
 
+function dateInTimezone(now, timeZone) {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date(now));
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return values.year + "-" + values.month + "-" + values.day;
+}
+
 export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
   const date = utcDate(now);
+  // SportsAPI agrupa partidos por día UTC, mientras la agenda se muestra
+  // por día local de Guyana. Antes de las 00:00 UTC el día local puede ser
+  // el anterior; consultar ambos días evita perder eventos de esa jornada.
+  const dates = Array.from(new Set([
+    date,
+    dateInTimezone(now, "America/Guyana")
+  ])).sort();
   const fixtureSports = SPORTSAPI_FAVORITES.filter(item => item.kind === "fixtures");
   const raceSports = SPORTSAPI_FAVORITES.filter(item => item.kind === "races");
-  const jobs = [
+  const jobs = dates.flatMap(day => [
     ...fixtureSports.map(async item => {
-      const result = await providerGet(env, "/fixtures", { sport: item.id, date, page: 0 });
+      const result = await providerGet(env, "/fixtures", {
+        sport: item.id, date: day, page: 0
+      });
       const rows = Array.isArray(result.data) ? result.data : [];
       return {
         sport: item.id,
+        date: day,
         events: rows.map(mapFixture).filter(Boolean),
         hasNextPage: result.meta?.hasNextPage === true
       };
     }),
     ...raceSports.map(async item => {
-      const result = await providerGet(env, "/races", { sport: item.id, date });
+      const result = await providerGet(env, "/races", { sport: item.id, date: day });
       const rows = Array.isArray(result.data) ? result.data : [];
-      return { sport: item.id, events: rows.flatMap(mapRace), hasNextPage: false };
+      return { sport: item.id, date: day, events: rows.flatMap(mapRace), hasNextPage: false };
     })
-  ];
+  ]);
   const groups = await Promise.all(jobs);
   const unique = new Map();
   for (const group of groups) {
@@ -285,9 +315,8 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
     .filter(group => group.hasNextPage)
     .map(group => ({
       sport: group.sport,
+      date: group.date,
       page: 1,
-      // Hasta 40 ligas por deporte seleccionado; evita recorrer el catálogo
-      // entero y limita las consultas adicionales dentro de la cuota diaria.
       // El fútbol incluye más competiciones masculinas y femeninas;
       // cinco páginas cubren hasta 60 ligas sin recorrer todo el catálogo.
       maxPage: group.sport === "football" ? 5 : 3
@@ -295,6 +324,7 @@ export async function fetchSportsApiDailyAgenda(env, now = Date.now()) {
   return {
     source: "sportsapi",
     date,
+    dates,
     refreshedAt: now,
     pageQueue,
     events: Array.from(unique.values()).sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))
