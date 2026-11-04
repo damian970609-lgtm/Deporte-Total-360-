@@ -388,7 +388,7 @@ test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () =>
     capturedUrl = new URL(url);
     capturedAuthorization = options.headers.Authorization;
     return new Response(JSON.stringify({
-      data: [{ id: 123, sport: "football" }],
+      data: [{ id: 123, sport: "football", league: { id: 195828, name: "Premier League" } }],
       meta: { date: "2026-11-03", count: 1 }
     }), { status: 200 });
   };
