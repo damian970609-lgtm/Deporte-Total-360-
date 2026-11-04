@@ -115,7 +115,9 @@ test("consulta las diez fuentes de SportsAPI con Bearer y normaliza eventos favo
   assert.ok(!result.events.some(event => event.competition === "A competition not selected"));
   assert.ok(result.events.some(event => event.sport === "Ciclismo" && event.status === "finished"));
   assert.ok(result.events.some(event => event.sport === "Deportes de motor" && event.status === "live"));
-  assert.ok(result.pageQueue.some(task => task.sport === "football" && task.page === 1));
+  assert.ok(result.pageQueue.some(task =>
+    task.sport === "football" && task.page === 1 && task.maxPage === 5
+  ));
 });
 
 test("la paginación está acotada y valida deporte y página", async () => {
@@ -139,9 +141,13 @@ test("la paginación está acotada y valida deporte y página", async () => {
     /no es válida/
   );
   await assert.rejects(
-    fetchSportsApiFixturePage({ SPORTAPI_API_KEY: "key" }, "2026-11-03", "football", 5),
+    fetchSportsApiFixturePage({ SPORTAPI_API_KEY: "key" }, "2026-11-03", "football", 6),
     /no es válida/
   );
+  const lastFootballPage = await fetchSportsApiFixturePage(
+    { SPORTAPI_API_KEY: "key" }, "2026-11-03", "football", 5
+  );
+  assert.equal(lastFootballPage.page, 5);
 });
 
 test("los marcadores en vivo solo conservan ligas seleccionadas", async () => {
