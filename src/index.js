@@ -993,7 +993,6 @@ const SPORTSAPI_COMPETITION_ALIASES = {
     "Brasileirão Série A": ["Campeonato Brasileiro Série A", "Brasileirao", "Serie A Brazil"],
     "UEFA European Championship": ["UEFA Euro", "Euro"],
     "FIFA World Cup Qualifiers": [
-      "World Cup Qualification", "World Cup Qualifiers",
       "World Cup Qualification Europe", "World Cup Qualification Africa",
       "World Cup Qualification Asia", "World Cup Qualification Oceania",
       "World Cup Qualification South America", "World Cup Qualification CONCACAF",
@@ -1004,7 +1003,6 @@ const SPORTSAPI_COMPETITION_ALIASES = {
       "FIFA World Cup Qualification"
     ],
     "Africa Cup of Nations": ["AFCON"],
-    "International Friendlies": ["Friendlies"],
     "OFC Men's Nations Cup": ["OFC Nations Cup"],
     "Liga F Moeve": ["Liga F", "Primera Division Women"],
     "Women's Super League": ["FA Women's Super League", "Women's Super League England"],
@@ -1052,7 +1050,7 @@ const SPORTSAPI_COMPETITION_ALIASES = {
   handball: {
     "IHF Men's World Championship": ["Men's World Championship", "World Championship Men"],
     "IHF Women's World Championship": ["Women's World Championship", "World Championship Women"],
-    "Olympic Handball Tournament": ["Men's Olympic Handball Tournament", "Olympic Men's Handball", "Olympic Handball"],
+    "Olympic Handball Tournament": ["Men's Olympic Handball Tournament", "Olympic Men's Handball"],
     "Women's Olympic Handball Tournament": ["Olympic Women's Handball Tournament", "Olympic Women's Handball"]
   }
 };
