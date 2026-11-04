@@ -94,6 +94,34 @@ el deporte pueden no tener eventos/datos disponibles en ese momento. La
 cobertura y los endpoints dependen de la suscripción habilitada para cada API.
 El Worker conserva respuestas en caché para reducir consultas.
 
+## Integración SportsAPI.app para los diez deportes favoritos
+
+El Worker también ofrece un proxy independiente para SportsAPI.app. La clave
+se guarda como secreto SPORTAPI_API_KEY en Cloudflare y nunca se incluye en
+Flutter ni en la APK.
+
+Rutas principales:
+
+- GET /api/sportsapi/favorites — catálogo de diez deportes y competiciones favoritas.
+- GET /api/sportsapi/sports — deportes disponibles en el proveedor.
+- GET /api/sportsapi/fixtures?date=YYYY-MM-DD&sport=football&page=0 — agenda de deportes de equipo.
+- GET /api/sportsapi/races?date=YYYY-MM-DD&sport=cycling — ciclismo y deportes de motor.
+- GET /api/sportsapi/fixtures/{id}/statistics — estadísticas de un partido.
+- GET /api/sportsapi/races/{id}/results — clasificación de una carrera.
+- GET /api/sportsapi/leagues/{id}/standings?season={seasonId} y /api/sportsapi/series/{id}/standings — clasificaciones.
+
+El adaptador valida rutas, deportes y parámetros, envía Authorization: Bearer
+desde Cloudflare, conserva el sobre JSON data/meta, respeta Retry-After y usa
+caché para limitar consultas. La agenda solicita una página por deporte; la
+cobertura de cada competición depende del catálogo y del plan contratado.
+La lista favorita es la configuración deseada, no una garantía de que cada
+torneo tenga fixtures publicados en el proveedor.
+
+Para desplegar, agrega SPORTAPI_API_KEY como GitHub Actions secret del
+repositorio del Worker. El workflow lo instala en Cloudflare como secreto y
+verifica sportsapi_configured y los diez deportes favoritos. Si el secreto ya
+existe solo en otro repositorio, también debe configurarse aquí.
+
 ## Chat público
 
 La aplicación usa una única sala compartida implementada con un Durable Object SQLite (`PublicChatRoom`). El historial conserva los últimos 120 mensajes, admite alias de hasta 24 caracteres y mensajes de hasta 500 caracteres, y aplica un límite básico de frecuencia por dirección IP en memoria. Los alias no están autenticados ni verificados; la app advierte a los usuarios que no publiquen datos personales. No se guardan direcciones IP en los mensajes.
