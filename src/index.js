@@ -1021,16 +1021,16 @@ const SPORTSAPI_COMPETITION_ALIASES = {
     "WBSC Premier12": ["Premier12", "Premier 12"]
   },
   "ice-hockey": {
-    "Olympic Ice Hockey Tournament": ["Men's Olympic Ice Hockey Tournament", "Olympic Men's Ice Hockey", "Winter Olympics"],
-    "Olympic Women's Ice Hockey Tournament": ["Women's Olympic Ice Hockey", "Olympic Women's Hockey", "Winter Olympics"]
+    "Olympic Ice Hockey Tournament": ["Men's Olympic Ice Hockey Tournament", "Olympic Men's Ice Hockey"],
+    "Olympic Women's Ice Hockey Tournament": ["Women's Olympic Ice Hockey", "Olympic Women's Hockey"]
   },
   volleyball: {
     "Volleyball Nations League": ["Men's Volleyball Nations League", "VNL Men"],
     "FIVB Volleyball World Championship": ["FIVB Men's Volleyball World Championship", "Men's Volleyball World Championship"],
     "Women's Volleyball Nations League": ["FIVB Women's Volleyball Nations League", "VNL Women"],
     "FIVB Women's Volleyball World Championship": ["Women's Volleyball World Championship"],
-    "Olympic Volleyball Tournament": ["Men's Olympic Volleyball Tournament", "Men's Volleyball Olympic Tournament", "Olympic Volleyball"],
-    "Women's Olympic Volleyball Tournament": ["Olympic Women's Volleyball Tournament", "Olympic Volleyball"]
+    "Olympic Volleyball Tournament": ["Men's Olympic Volleyball Tournament", "Men's Volleyball Olympic Tournament"],
+    "Women's Olympic Volleyball Tournament": ["Olympic Women's Volleyball Tournament"]
   },
   futsal: {
     "Copa América de Futsal": ["Copa America Futsal"],
