@@ -358,3 +358,74 @@ test("un error de caché no interrumpe la API", async () => {
 
   assert.equal(response.status, 200);
 });
+
+
+test("SportsAPI.app requiere SPORTAPI_API_KEY y nunca devuelve una clave", async () => {
+  const response = await worker.fetch(request("/api/sportsapi/sports"), {});
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "sportsapi_not_configured");
+});
+
+test("catálogo de favoritos publica los diez deportes y competiciones", async () => {
+  const response = await worker.fetch(request("/api/sportsapi/favorites"), {});
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.sports.length, 10);
+  assert.ok(body.sports.some(sport => sport.id === "futsal"));
+  assert.ok(body.sports.some(sport => sport.id === "cycling"));
+  assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("UEFA Champions League"));
+});
+
+test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () => {
+  let capturedUrl;
+  let capturedAuthorization;
+  globalThis.fetch = async (url, options) => {
+    capturedUrl = new URL(url);
+    capturedAuthorization = options.headers.Authorization;
+    return new Response(JSON.stringify({
+      data: [{ id: 123, sport: "football" }],
+      meta: { date: "2026-11-03", count: 1 }
+    }), { status: 200 });
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-03&sport=football&page=0"),
+    { SPORTAPI_API_KEY: "sportsapi-test-secret" }
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(capturedUrl.origin, "https://api.sportsapi.app");
+  assert.equal(capturedUrl.pathname, "/v2/fixtures");
+  assert.equal(capturedUrl.searchParams.get("sport"), "football");
+  assert.equal(capturedAuthorization, "Bearer sportsapi-test-secret");
+  assert.equal(body.data[0].id, 123);
+});
+
+test("proxy SportsAPI.app valida el deporte antes de llamar al proveedor", async () => {
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return new Response("{}", { status: 200 });
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-03&sport=not-a-sport"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  assert.equal(response.status, 400);
+  assert.equal(called, false);
+});
+
+test("proxy SportsAPI.app admite resultados de carreras con sesión", async () => {
+  let capturedUrl;
+  globalThis.fetch = async url => {
+    capturedUrl = new URL(url);
+    return new Response(JSON.stringify({ data: [], meta: { count: 0 } }), { status: 200 });
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/races/987/results?session=654"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  assert.equal(response.status, 200);
+  assert.equal(capturedUrl.pathname, "/v2/races/987/results");
+  assert.equal(capturedUrl.searchParams.get("session"), "654");
+});

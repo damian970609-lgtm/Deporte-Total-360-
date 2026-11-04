@@ -45,8 +45,10 @@ jobs:
           command: deploy
           secrets: |
             APISPORTS_KEY
+            SPORTAPI_API_KEY
         env:
           APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+          SPORTAPI_API_KEY: ${{ secrets.SPORTAPI_API_KEY }}
 
       - name: Verificar proveedor, partidos y sala pública
         run: |
@@ -63,6 +65,9 @@ jobs:
           if (health.provider_configured !== true) {
             throw new Error("El Worker está online, pero APISPORTS_KEY no está configurada.");
           }
+          if (health.sportsapi_configured !== true) {
+            throw new Error("El Worker está online, pero SPORTAPI_API_KEY no está configurada.");
+          }
           if (!Array.isArray(chat.messages)) {
             throw new Error("La sala pública no devolvió una lista de mensajes.");
           }
@@ -70,17 +75,29 @@ jobs:
           NODE
 
           CATALOG="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/sports")"
-          node - "$CATALOG" <<'NODE'
-          const catalog = JSON.parse(process.argv[2]);
-          if (!Array.isArray(catalog.sports)) {
-            throw new Error("El catálogo no devolvió sports[].");
-          }
-          const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
-          const available = new Set(catalog.sports.map((sport) => sport.id));
-          const missing = required.filter((id) => !available.has(id));
-          if (missing.length) {
-            throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
-          }
-          console.log("Catálogo API disponible; deportes configurados:", catalog.sports.length);
-          console.log("No se consultó el proveedor deportivo durante el despliegue para no consumir la cuota por minuto.");
+          node - "$CATALOG" "$BASE" <<'NODE'
+          (async () => {
+            const catalog = JSON.parse(process.argv[2]);
+            if (!Array.isArray(catalog.sports)) {
+              throw new Error("El catálogo no devolvió sports[].");
+            }
+            const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
+            const available = new Set(catalog.sports.map((sport) => sport.id));
+            const missing = required.filter((id) => !available.has(id));
+            if (missing.length) {
+              throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
+            }
+            console.log("Catálogo API-Sports disponible; deportes configurados:", catalog.sports.length);
+            const favoritesResponse = await fetch(process.argv[3] + "/api/sportsapi/favorites");
+            if (!favoritesResponse.ok) throw new Error("No se pudo consultar el catálogo de favoritos SportsAPI.app.");
+            const favorites = await favoritesResponse.json();
+            if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) {
+              throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
+            }
+            console.log("Catálogo SportsAPI.app disponible; deportes favoritos:", favorites.sports.length);
+            console.log("No se consultó el proveedor deportivo durante el despliegue para no consumir la cuota por minuto.");
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
           NODE

@@ -886,6 +886,70 @@ function liveSourcesResponse(request, env) {
   );
 }
 
+
+// Proxy seguro de SportsAPI.app: la clave solo vive en Cloudflare Secrets.
+const SPORTSAPI_BASE = "https://api.sportsapi.app/v2";
+const SPORTSAPI_SLUGS = new Set(["football","basketball","baseball","ice-hockey","volleyball","mma","futsal","cycling","motorsport","handball"]);
+const FAVORITE_SPORTS = [
+{id:"football",name:"Fútbol",competitions:["LaLiga EA SPORTS","Premier League","Serie A","Bundesliga","Ligue 1","Major League Soccer","Brasileirão Série A","FIFA World Cup","UEFA European Championship","Copa América","UEFA World Cup Qualifiers","CONMEBOL World Cup Qualifiers","CONCACAF World Cup Qualifiers","CAF World Cup Qualifiers","AFC World Cup Qualifiers","OFC World Cup Qualifiers","UEFA Champions League","International Friendlies","FIFA Club World Cup","Africa Cup of Nations","AFC Asian Cup","CONCACAF Gold Cup","UEFA Nations League","CONCACAF Nations League","OFC Men's Nations Cup","Copa Libertadores","Copa Sudamericana","FA Cup","Copa del Rey","Coppa Italia","DFB-Pokal","Liga F","Women's Super League","Serie A Women","Google Pixel Frauen-Bundesliga","Première Ligue","NWSL","Campeonato Brasileiro Feminino Série A1","FIFA Women's World Cup","UEFA Women's EURO","Copa América Femenina","UEFA Women's European Qualifiers","AFC Women's Asian Cup Qualifiers","Women's Africa Cup of Nations Qualifiers","CONCACAF W Championship Qualifiers","Copa América Femenina Qualifiers","OFC Women's Nations Cup Qualifiers","WAFCON","AFC Women's Asian Cup","CONCACAF W Gold Cup","CONCACAF W Championship","UEFA Women's Nations League","OFC Women's Nations Cup","UEFA Women's Champions League","FIFA Women's Champions Cup","FIFA Women's Club World Cup","CONMEBOL Libertadores Femenina","Women's FA Cup","Copa de la Reina","Coppa Italia Women","DFB-Pokal Frauen","Coupe de France Féminine"]},
+{id:"basketball",name:"Baloncesto",competitions:["NBA","WNBA","FIBA World Cup","Olympic Basketball"]},
+{id:"baseball",name:"Béisbol",competitions:["MLB","World Baseball Classic","WBSC Premier12","WBSC Women's Baseball World Cup"]},
+{id:"ice-hockey",name:"Hockey sobre hielo",competitions:["NHL","PWHL","IIHF Ice Hockey World Championship","IIHF Women's World Championship","Winter Olympics"]},
+{id:"volleyball",name:"Voleibol",competitions:["Volleyball Nations League","FIVB Volleyball World Championship","FIVB Men's Club World Championship","FIVB Women's Club World Championship","Olympic Volleyball"]},
+{id:"mma",name:"MMA",competitions:["UFC"]},
+{id:"futsal",name:"Fútbol sala",competitions:["FIFA Futsal World Cup","UEFA Futsal EURO","Copa América de Futsal","AFC Futsal Asian Cup","FIFA Futsal Women's World Cup","AFC Women's Futsal Asian Cup","Copa América de Futsal Femenina"]},
+{id:"cycling",name:"Ciclismo",competitions:["La Vuelta a España","La Vuelta Femenina","Giro d'Italia","Giro d'Italia Women","Tour de France","Tour de France Femmes"]},
+{id:"motorsport",name:"Deportes de motor",competitions:["Formula 1","MotoGP","F1 Academy","FIM Women's Circuit Racing World Championship"]},
+{id:"handball",name:"Balonmano",competitions:["IHF Men's World Championship","EHF EURO Men","Olympic Handball","IHF Women's World Championship","EHF EURO Women","Olympic Women's Handball"]}
+];
+function sportsApiFavoritesResponse() {
+  return json({sports:FAVORITE_SPORTS.map(s=>({...s,kind:s.id==="cycling"||s.id==="motorsport"?"races":"fixtures"}))},200,{"Cache-Control":"public, max-age=3600"});
+}
+function sportsApiRoute(path) {
+  const suffix=path.replace(/^\/api\/sportsapi\/?/,"");
+  if(!suffix||suffix.includes("..")||suffix.includes("\\")||suffix.includes("//")) return null;
+  const roots={sports:[],livescores:["sport"],fixtures:["date","sport","league","page"],races:["date","sport","series","page"],categories:["sport"],leagues:["category","sport","country"],series:["category","sport"]};
+  if(Object.hasOwn(roots,suffix)) return {upstream:suffix,allowed:roots[suffix]};
+  let m=suffix.match(/^fixtures\/(\d+)(?:\/(statistics|events|lineups|h2h|form|streaks|best-players))?$/);
+  if(m) return {upstream:"fixtures/"+m[1]+(m[2]?"/"+m[2]:""),allowed:[]};
+  m=suffix.match(/^races\/(\d+)(?:\/(results))?$/);
+  if(m) return {upstream:"races/"+m[1]+(m[2]?"/"+m[2]:""),allowed:m[2]?["session"]:[]};
+  m=suffix.match(/^leagues\/(\d+)\/(standings|seasons|top-players|top-teams|fixtures|rounds)$/);
+  if(m) return {upstream:"leagues/"+m[1]+"/"+m[2],allowed:["season","type","round","page","limit","statistic"]};
+  m=suffix.match(/^series\/(\d+)\/(standings|seasons|races)$/);
+  if(m) return {upstream:"series/"+m[1]+"/"+m[2],allowed:["season","type","page"]};
+  return null;
+}
+function validateSportsApiQuery(params,allowed) {
+  for(const [key,value] of params.entries()) if(!allowed.includes(key)||!value||value.length>120||/[\u0000-\u001F\u007F]/.test(value)) return "Parámetro no permitido o inválido: "+key;
+  const date=params.get("date"); if(date&&!validDate(date)) return "Fecha inválida: YYYY-MM-DD.";
+  const sport=params.get("sport"); if(sport&&!SPORTSAPI_SLUGS.has(sport)) return "Deporte no incluido en favoritos.";
+  const page=params.get("page"); if(page&&(!/^\d+$/.test(page)||Number(page)>99)) return "Página fuera del rango permitido.";
+  for(const key of ["league","series","category","season","session","round","limit"]) { const value=params.get(key); if(value&&(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<1)) return "Identificador inválido: "+key; }
+  return null;
+}
+async function sportsApiProxy(request,env,route) {
+  const apiKey=env.SPORTAPI_API_KEY||env.SPORTSAPI_API_KEY;
+  if(!apiKey) return json({error:{code:"sportsapi_not_configured",message:"Configura SPORTAPI_API_KEY como secreto del Worker de Cloudflare."}},503,{"Cache-Control":"no-store"});
+  const incoming=new URL(request.url);
+  const validationError=validateSportsApiQuery(incoming.searchParams,route.allowed);
+  if(validationError) return json({error:{code:"bad_request",message:validationError}},400);
+  const upstreamUrl=SPORTSAPI_BASE+"/"+route.upstream+incoming.search;
+  const cacheKey=new Request(upstreamUrl,{method:"GET"});
+  const cache=globalThis.caches?.default;
+  const cached=await cacheMatch(cache,cacheKey);
+  if(cached) { const response=new Response(cached.body,cached); response.headers.set("Access-Control-Allow-Origin","*"); response.headers.set("X-Data-Source","cache"); return response; }
+  try {
+    const upstream=await fetch(upstreamUrl,{method:"GET",headers:{"Authorization":"Bearer "+apiKey,"Accept":"application/json"}});
+    const body=await upstream.text(); let parsed;
+    try { parsed=JSON.parse(body); } catch { return json({error:{code:"invalid_upstream_response",message:"SportsAPI devolvió una respuesta no JSON."}},502); }
+    if(!upstream.ok) { const retry=upstream.headers.get("Retry-After"); return json(parsed,upstream.status,{"Cache-Control":"no-store",...(retry?{"Retry-After":retry}:{})}); }
+    const ttl=route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"?3600:route.upstream==="livescores"?15:route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/")?45:120;
+    const response=json(parsed,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
+    await cachePut(cache,cacheKey,response.clone()); return response;
+  } catch { return json({error:{code:"upstream_unavailable",message:"No se pudo conectar con SportsAPI."}},503,{"Retry-After":"30"}); }
+}
+
 export default {
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
@@ -925,6 +989,13 @@ export default {
       return liveSourcesResponse(request, env);
     }
 
+    if (path === "/api/sportsapi/favorites") return sportsApiFavoritesResponse();
+    if (path.startsWith("/api/sportsapi/")) {
+      const config = sportsApiRoute(path);
+      if (!config) return json({error:{code:"not_found",message:"Ruta SportsAPI no disponible."}},404);
+      return sportsApiProxy(request,env,config);
+    }
+
     if (path === "/health") {
       return json({
         service: "Deporte Total 360 API",
@@ -932,6 +1003,8 @@ export default {
         provider_configured: Boolean(
           env.APISPORTS_KEY || env.APIFOOTBALL_KEY
         ),
+        sportsapi_configured: Boolean(env.SPORTAPI_API_KEY || env.SPORTSAPI_API_KEY),
+        sportsapi_favorite_sports: FAVORITE_SPORTS.length,
         sports: Object.keys(SPORTS).length,
         live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON)
       });
