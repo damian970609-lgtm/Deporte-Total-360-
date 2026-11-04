@@ -1003,6 +1003,8 @@ export default {
         provider_configured: Boolean(
           env.APISPORTS_KEY || env.APIFOOTBALL_KEY
         ),
+        sportsapi_configured: Boolean(env.SPORTAPI_API_KEY || env.SPORTSAPI_API_KEY),
+        sportsapi_favorite_sports: FAVORITE_SPORTS.length,
         sports: Object.keys(SPORTS).length,
         live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON)
       });
