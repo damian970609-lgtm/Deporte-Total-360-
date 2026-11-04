@@ -375,6 +375,10 @@ test("catálogo de favoritos publica los diez deportes y competiciones", async (
   assert.ok(body.sports.some(sport => sport.id === "futsal"));
   assert.ok(body.sports.some(sport => sport.id === "cycling"));
   assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("UEFA Champions League"));
+  assert.deepEqual(body.sports.find(sport => sport.id === "basketball").competitions, ["NBA", "WNBA"]);
+  assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("Women's Super League"));
+  assert.ok(body.sports.find(sport => sport.id === "cycling").competitions.includes("Tour de France Femmes avec Zwift"));
+  assert.ok(!body.sports.find(sport => sport.id === "basketball").competitions.includes("FIBA World Cup"));
 });
 
 test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () => {
