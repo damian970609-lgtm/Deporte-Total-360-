@@ -120,6 +120,67 @@ test("consulta las diez fuentes de SportsAPI con Bearer y normaliza eventos favo
   ));
 });
 
+test("incluye los días UTC y local para no perder la jornada de Guyana", async () => {
+  const dates = [];
+  globalThis.fetch = async url => {
+    const parsed = new URL(url);
+    dates.push(parsed.searchParams.get("date"));
+    return jsonResponse([]);
+  };
+
+  const result = await fetchSportsApiDailyAgenda(
+    { SPORTAPI_API_KEY: "key" },
+    Date.parse("2026-11-04T01:00:00.000Z")
+  );
+
+  assert.deepEqual([...new Set(dates)].sort(), ["2026-11-03", "2026-11-04"]);
+  assert.equal(dates.length, 20);
+  assert.deepEqual(result.dates, ["2026-11-03", "2026-11-04"]);
+});
+
+test("reconoce eliminatorias de todas las confederaciones y amistosos", async () => {
+  globalThis.fetch = async () => jsonResponse([
+    fixture(201, "football", "FIFA World Cup Qualification - AFC"),
+    fixture(202, "football", "FIFA World Cup Qualification - CONMEBOL"),
+    fixture(203, "football", "FIFA World Cup Qualification - CAF"),
+    fixture(204, "football", "FIFA Women's World Cup Qualification - UEFA"),
+    fixture(205, "football", "International Friendlies")
+  ]);
+
+  const events = await fetchSportsApiLiveScores({ SPORTAPI_API_KEY: "key" });
+  assert.equal(events.length, 5);
+});
+
+test("reconoce La Vuelta dentro de la selección de ciclismo", async () => {
+  globalThis.fetch = async url => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith("/races") && parsed.searchParams.get("sport") === "cycling") {
+      return jsonResponse([{
+        id: 70,
+        sport: "cycling",
+        name: "La Vuelta",
+        series: { id: 71, name: "Cycling Men" },
+        season: { id: 72 },
+        sessions: [{
+          id: 73,
+          name: "Stage 1",
+          startTime: "2026-11-03T10:00:00.000Z",
+          status: "scheduled"
+        }]
+      }]);
+    }
+    return jsonResponse([]);
+  };
+
+  const result = await fetchSportsApiDailyAgenda(
+    { SPORTAPI_API_KEY: "key" },
+    Date.parse("2026-11-03T12:00:00.000Z")
+  );
+  assert.ok(result.events.some(event =>
+    event.sport === "Ciclismo" && event.title.startsWith("La Vuelta")
+  ));
+});
+
 test("la paginación está acotada y valida deporte y página", async () => {
   let requested;
   globalThis.fetch = async (url, init) => {
