@@ -1023,7 +1023,7 @@ async function fetchSportsApiEvents(state, env, now) {
     const task = pageQueue.shift();
     try {
       const pageResult = await fetchSportsApiFixturePage(
-        env, daily.date, task.sport, task.page
+        env, task.date || daily.date, task.sport, task.page
       );
       const merged = new Map((daily.events || []).map(item => [item.id, item]));
       for (const event of pageResult.events || []) merged.set(event.id, event);
