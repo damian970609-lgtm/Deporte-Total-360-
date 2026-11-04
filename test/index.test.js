@@ -1,6 +1,13 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
+import {
+  AutomaticLiveSchedule,
+  parseM3u,
+  parseMarcaAgendaHtml,
+  parseXmltv,
+  programmeMatchesEvent
+} from "../src/automatic_live_scheduler.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -151,6 +158,280 @@ test("catálogo en vivo rechaza fechas de consulta imposibles", async () => {
   );
 
   assert.equal(response.status, 400);
+});
+
+
+test("la agenda MARCA reconoce eventos SportsEvent y normaliza sus datos", () => {
+  const html = `<html><script type="application/ld+json">
+    {
+      "@context":"https://schema.org",
+      "@type":"SportsEvent",
+      "name":"Equipo Azul vs Equipo Rojo",
+      "sport":"Soccer",
+      "startDate":"2026-11-03T19:30:00Z",
+      "endDate":"2026-11-03T21:30:00Z",
+      "homeTeam":{"@type":"SportsTeam","name":"Equipo Azul","logo":{"url":"https://img.example/azul.png"}},
+      "awayTeam":{"@type":"SportsTeam","name":"Equipo Rojo","logo":"https://img.example/rojo.png"},
+      "superEvent":{"@type":"SportsEvent","name":"Liga de prueba"}
+    }
+  </script></html>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].homeTeam, "Equipo Azul");
+  assert.equal(events[0].awayTeam, "Equipo Rojo");
+  assert.equal(events[0].sport, "Fútbol");
+  assert.equal(events[0].competition, "Liga de prueba");
+  assert.equal(events[0].homeTeamLogo, "https://img.example/azul.png");
+  assert.equal(events[0].awayTeamLogo, "https://img.example/rojo.png");
+  assert.equal(events[0].participants.length, 2);
+  assert.equal(events[0].startsAt, Date.parse("2026-11-03T19:30:00Z"));
+});
+
+
+
+test("normaliza escudos MARCA absolutos, protocol-relative y relativos", () => {
+  const html = `<script type="application/ld+json">
+    {
+      "@type":"SportsEvent",
+      "name":"Equipo Norte vs Equipo Sur",
+      "sport":"Football",
+      "startDate":"2026-11-03T19:30:00Z",
+      "homeTeam":{
+        "@type":"SportsTeam",
+        "name":"Equipo Norte",
+        "logo":{"url":"//img.example/norte.png"}
+      },
+      "awayTeam":{
+        "@type":"SportsTeam",
+        "name":"Equipo Sur",
+        "logo":{"contentUrl":"/assets/escudos/sur.svg"}
+      },
+      "competitors":[
+        {"@type":"Person","name":"Deportista Uno","image":{"src":"//img.example/uno.png"},"nationality":"Guyana"}
+      ]
+    }
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].homeTeamLogo, "https://img.example/norte.png");
+  assert.equal(events[0].awayTeamLogo, "https://www.marca.com/assets/escudos/sur.svg");
+  assert.equal(events[0].participants.find(item => item.name === "Deportista Uno").imageUrl,
+    "https://img.example/uno.png");
+});
+
+test("la agenda conserva participantes e imágenes en deportes individuales", () => {
+  const html = `<script type="application/ld+json">
+    {
+      "@type":"SportsEvent",
+      "name":"Carlos Alcaraz vs Jannik Sinner",
+      "sport":"Tennis",
+      "startDate":"2026-11-03T19:30:00Z",
+      "competitors":[
+        {"@type":"Person","name":"Carlos Alcaraz","image":{"url":"https://img.example/alcaraz.jpg"},"nationality":"España"},
+        {"@type":"Person","name":"Jannik Sinner","image":"https://img.example/sinner.jpg","nationality":"Italia"}
+      ]
+    }
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sport, "Tenis");
+  assert.equal(events[0].participants.length, 2);
+  assert.equal(events[0].participants[0].name, "Carlos Alcaraz");
+  assert.equal(events[0].participants[0].imageUrl, "https://img.example/alcaraz.jpg");
+  assert.equal(events[0].participants[1].country, "Italia");
+});
+
+test("la agenda acepta eventos individuales sin formato equipo contra equipo", () => {
+  const html = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Final 100 metros masculino",
+     "sport":"Athletics","startDate":"2026-11-03T21:00:00Z",
+     "performer":[{"@type":"Person","name":"Atleta de prueba","image":"https://img.example/athlete.jpg"}]}
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].sport, "Atletismo");
+  assert.equal(events[0].participants[0].name, "Atleta de prueba");
+  assert.equal(events[0].participants[0].imageUrl, "https://img.example/athlete.jpg");
+});
+
+
+test("lee los eventos, logos y participantes desde JSON incrustado del CMS", () => {
+  const payload = {
+    pageProps: {
+      schedule: [
+        {
+          "@type": "SportsEvent",
+          name: "Equipo Norte vs Equipo Sur",
+          sport: "Football",
+          startDate: "2026-11-03T19:30:00Z",
+          homeTeam: {
+            "@type": "SportsTeam",
+            name: "Equipo Norte",
+            logo: "https://img.example/norte.png"
+          },
+          awayTeam: {
+            "@type": "SportsTeam",
+            name: "Equipo Sur",
+            logo: "https://img.example/sur.png"
+          }
+        },
+        {
+          "@type": "SportsEvent",
+          name: "Final tenis individual",
+          sport: "Tennis",
+          startDate: "2026-11-03T20:30:00Z",
+          performers: [
+            {
+              "@type": "Person",
+              name: "Deportista Uno",
+              image: "https://img.example/uno.png",
+              nationality: "España"
+            }
+          ]
+        }
+      ]
+    }
+  };
+  const html = '<script id="__NEXT_DATA__" type="application/json">' +
+    JSON.stringify(payload) + '</script>';
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T18:00:00Z"));
+
+  assert.equal(events.length, 2);
+  const match = events.find(event => event.homeTeam === "Equipo Norte");
+  const individual = events.find(event => event.sport === "Tenis");
+  assert.equal(match.homeTeamLogo, "https://img.example/norte.png");
+  assert.equal(match.awayTeamLogo, "https://img.example/sur.png");
+  assert.equal(individual.participants[0].name, "Deportista Uno");
+  assert.equal(individual.participants[0].imageUrl, "https://img.example/uno.png");
+  assert.equal(individual.participants[0].country, "España");
+});
+
+test("mantiene en agenda un evento que comenzó hace dos horas y sigue en curso", () => {
+  const html = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
+     "sport":"football","startDate":"2026-11-03T16:00:00Z",
+     "endDate":"2026-11-03T19:30:00Z"}
+  </script>`;
+  const now = Date.parse("2026-11-03T18:30:00Z");
+  const events = parseMarcaAgendaHtml(html, now);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].endsAt, Date.parse("2026-11-03T19:30:00Z"));
+});
+
+test("retira eventos con estado EventCompleted o EventCancelled", () => {
+  const completed = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
+     "sport":"football","startDate":"2026-11-03T16:00:00Z",
+     "endDate":"2026-11-03T19:30:00Z",
+     "eventStatus":"https://schema.org/EventCompleted"}
+  </script>`;
+  const cancelled = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Verde vs Equipo Blanco",
+     "sport":"football","startDate":"2026-11-03T20:00:00Z",
+     "eventStatus":"https://schema.org/EventCancelled"}
+  </script>`;
+  const now = Date.parse("2026-11-03T18:30:00Z");
+  assert.deepEqual(parseMarcaAgendaHtml(completed, now), []);
+  assert.deepEqual(parseMarcaAgendaHtml(cancelled, now), []);
+});
+
+test("el parseo de MARCA convierte horarios locales Europe/Madrid", () => {
+  const html = `<script type="application/ld+json">
+    {"@type":"SportsEvent","name":"Equipo Azul vs Equipo Rojo",
+     "sport":"football","startDate":"2026-11-03T19:30"}
+  </script>`;
+  const events = parseMarcaAgendaHtml(html, Date.parse("2026-11-03T10:00:00Z"));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].startsAt, Date.parse("2026-11-03T18:30:00Z"));
+});
+
+test("M3U y XMLTV se cruzan por tvg-id y nombres de canal", () => {
+  const channels = parseM3u(`#EXTM3U
+#EXTINF:-1 tvg-id="sports.es" tvg-name="Deportes ES" tvg-language="Spanish" group-title="Deportes",Canal Deportes HD
+https://media.example/live.m3u8
+`);
+  assert.equal(channels.length, 1);
+  assert.equal(channels[0].language, "Spanish");
+  const programmes = parseXmltv(`<tv>
+    <channel id="sports.es"><display-name>Deportes ES</display-name></channel>
+    <programme channel="sports.es" start="20261103193000 +0000" stop="20261103213000 +0000">
+      <title>Equipo Azul vs Equipo Rojo</title>
+    </programme>
+  </tv>`);
+  assert.equal(programmes.length, 1);
+  assert.equal(programmes[0].channelName, "Deportes ES");
+  assert.equal(programmeMatchesEvent(programmes[0].title, {
+    title: "Equipo Azul vs Equipo Rojo",
+    homeTeam: "Equipo Azul",
+    awayTeam: "Equipo Rojo"
+  }), true);
+});
+
+test("el Durable Object conserva una instantánea para los teléfonos", async () => {
+  const values = new Map([["snapshot", {
+    status: "ok",
+    source: "marca",
+    updatedAt: "2026-11-03T19:00:00.000Z",
+    events: [{ event: { id: "match-1" }, sources: [] }]
+  }]]);
+  const scheduler = new AutomaticLiveSchedule({
+    storage: {
+      async get(key) { return values.get(key); },
+      async put(key, value) { values.set(key, value); }
+    }
+  }, {});
+  const response = await scheduler.fetch(
+    new Request("https://automatic-live.internal/snapshot")
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.status, "ok");
+  assert.equal(body.events[0].event.id, "match-1");
+});
+
+test("la ruta pública entrega la instantánea común a todos los clientes", async () => {
+  let requested = "";
+  const binding = {
+    idFromName(name) { assert.equal(name, "deporte-total-360-global"); return "global"; },
+    get() {
+      return {
+        async fetch(request) {
+          requested = new URL(request.url).pathname;
+          return new Response(JSON.stringify({
+            status: "ok", source: "marca", events: []
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      };
+    }
+  };
+  const response = await worker.fetch(
+    request("/api/live/auto/schedule"),
+    { AUTOMATIC_LIVE_SCHEDULE: binding }
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(requested, "/snapshot");
+  assert.equal(body.source, "marca");
+  assert.deepEqual(body.events, []);
+});
+
+test("el disparador programado ordena actualizar el planificador central", async () => {
+  let requested = "";
+  const binding = {
+    idFromName() { return "global"; },
+    get() {
+      return {
+        async fetch(request) {
+          requested = new URL(request.url).pathname;
+          return new Response(JSON.stringify({
+            status: "ok", events: [{ event: { id: "match-1" } }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      };
+    }
+  };
+  await worker.scheduled({ cron: "* * * * *" }, { AUTOMATIC_LIVE_SCHEDULE: binding }, {});
+  assert.equal(requested, "/refresh");
 });
 
 test("ruta desconocida devuelve 404", async () => {

@@ -1,3 +1,7 @@
+import { AutomaticLiveSchedule } from "./automatic_live_scheduler.js";
+import { fetchSportsApiStatistics, sportsApiFavoritesPayload } from "./sportsapi_favorites.js";
+export { AutomaticLiveSchedule };
+
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -921,6 +925,51 @@ export default {
       );
     }
 
+    if (path === "/api/live/auto/schedule") {
+      if (!env.AUTOMATIC_LIVE_SCHEDULE) {
+        return json({ error: "El planificador automático todavía no está configurado." }, 503);
+      }
+      const id = env.AUTOMATIC_LIVE_SCHEDULE.idFromName("deporte-total-360-global");
+      const scheduler = env.AUTOMATIC_LIVE_SCHEDULE.get(id);
+      return scheduler.fetch(new Request(
+        "https://automatic-live.internal/snapshot",
+        { method: "GET" }
+      ));
+    }
+
+    if (path === "/api/sportsapi/favorites") {
+      return json({ data: sportsApiFavoritesPayload() }, 200, {
+        "Cache-Control": "public, max-age=3600"
+      });
+    }
+
+    if (path === "/api/sportsapi/statistics") {
+      const params = incoming.searchParams;
+      const type = params.get("type") || "";
+      const id = params.get("id") || "";
+      if (![
+        "fixture-statistics", "fixture", "race-results",
+        "league-standings", "series-standings", "seasons"
+      ].includes(type)) {
+        return json({ error: "Tipo de estadística no permitido." }, 400);
+      }
+      try {
+        const result = await fetchSportsApiStatistics(env, type, id, {
+          season: params.get("season") || "",
+          session: params.get("session") || "",
+          kind: params.get("kind") || ""
+        });
+        return json(result, 200, {
+          "Cache-Control": type === "fixture-statistics" ? "public, max-age=30" : "public, max-age=600"
+        });
+      } catch (error) {
+        return json({
+          error: String(error?.message || "No se pudo consultar SportsAPI."),
+          provider_status: Number(error?.status || 502)
+        }, Number(error?.status || 502));
+      }
+    }
+
     if (path === "/api/live/sources") {
       return liveSourcesResponse(request, env);
     }
@@ -930,10 +979,13 @@ export default {
         service: "Deporte Total 360 API",
         status: "online",
         provider_configured: Boolean(
-          env.APISPORTS_KEY || env.APIFOOTBALL_KEY
+          env.APISPORTS_KEY || env.APIFOOTBALL_KEY || env.SPORTAPI_API_KEY
         ),
+        sportsapi_configured: Boolean(env.SPORTAPI_API_KEY),
+        sportsapi_favorite_sports: 10,
         sports: Object.keys(SPORTS).length,
-        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON)
+        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON),
+        automatic_live_scheduler_configured: Boolean(env.AUTOMATIC_LIVE_SCHEDULE)
       });
     }
 
@@ -992,5 +1044,28 @@ export default {
       config,
       resource
     );
+  },
+
+  async scheduled(controller, env, ctx) {
+    if (!env.AUTOMATIC_LIVE_SCHEDULE) {
+      throw new Error("Falta el binding AUTOMATIC_LIVE_SCHEDULE.");
+    }
+    const id = env.AUTOMATIC_LIVE_SCHEDULE.idFromName("deporte-total-360-global");
+    const scheduler = env.AUTOMATIC_LIVE_SCHEDULE.get(id);
+    const response = await scheduler.fetch(new Request(
+      "https://automatic-live.internal/refresh",
+      { method: "POST" }
+    ));
+    if (!response.ok) {
+      throw new Error("Falló la actualización central de agenda: HTTP " + response.status);
+    }
+    const result = await response.json();
+    console.log("Automatic live schedule:", {
+      cron: controller?.cron || "manual",
+      status: result.status,
+      events: result.events?.length || 0,
+      updatedAt: result.updatedAt || null,
+      sourceError: result.sourceError || null
+    });
   }
 };

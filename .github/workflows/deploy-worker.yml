@@ -45,8 +45,10 @@ jobs:
           command: deploy
           secrets: |
             APISPORTS_KEY
+            SPORTAPI_API_KEY
         env:
           APISPORTS_KEY: ${{ secrets.APISPORTS_KEY }}
+          SPORTAPI_API_KEY: ${{ secrets.SPORTAPI_API_KEY }}
 
       - name: Verificar proveedor, partidos y sala pública
         run: |
@@ -54,19 +56,34 @@ jobs:
           BASE="https://deporte-total-360-api.damian970609.workers.dev"
           HEALTH="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/health")"
           CHAT="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/chat/messages")"
-          node - "$HEALTH" "$CHAT" <<'NODE'
+          SCHEDULE="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/live/auto/schedule")"
+          node - "$HEALTH" "$CHAT" "$SCHEDULE" <<'NODE'
           const health = JSON.parse(process.argv[2]);
           const chat = JSON.parse(process.argv[3]);
+          const schedule = JSON.parse(process.argv[4]);
           if (health.status !== "online") {
             throw new Error("El endpoint /health no confirmó que el Worker está online.");
           }
           if (health.provider_configured !== true) {
-            throw new Error("El Worker está online, pero APISPORTS_KEY no está configurada.");
+            throw new Error("El Worker está online, pero no tiene una clave de proveedor deportivo configurada.");
+          }
+          if (health.sportsapi_configured !== true) {
+            throw new Error("Falta SPORTAPI_API_KEY en los secretos Actions del repositorio del Worker.");
+          }
+          if (health.automatic_live_scheduler_configured !== true) {
+            throw new Error("El planificador automático no está conectado al Worker.");
+          }
+          if (!Array.isArray(schedule.events) ||
+              !["ok", "stale", "pending", "source_unavailable"].includes(schedule.status)) {
+            throw new Error("La ruta central de agenda/transmisiones no devolvió el formato esperado.");
           }
           if (!Array.isArray(chat.messages)) {
             throw new Error("La sala pública no devolvió una lista de mensajes.");
           }
           console.log("Worker online; proveedor configurado; sala pública accesible; mensajes:", chat.messages.length);
+          console.log("Planificador central:", schedule.status, "eventos:", schedule.events.length,
+            "actualizado:", schedule.updatedAt || "pendiente",
+            "diagnóstico:", schedule.sourceError || "sin errores reportados");
           NODE
 
           CATALOG="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/sports")"

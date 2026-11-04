@@ -1,13 +1,16 @@
 # Deporte Total 360° — API multideporte
 
 Cloudflare Worker que sirve como intermediario seguro entre la aplicación
-Android Flutter y API-Sports. La clave del proveedor permanece en Cloudflare:
-nunca debe incluirse en el APK ni en el código Flutter.
+Android Flutter y SportsAPI.app para los diez deportes favoritos. También
+conserva las rutas antiguas de API-Sports para compatibilidad. Las claves
+permanecen en Cloudflare: nunca deben incluirse en el APK ni en Flutter.
 
 ## Estado y catálogo
 
-- `GET /health` — estado del Worker y número de deportes configurados.
-- `GET /api/sports` — catálogo de deportes, identificadores y recursos disponibles.
+- `GET /health` — estado del Worker, clave SportsAPI configurada y número de deportes favoritos.
+- `GET /api/sportsapi/favorites` — deportes y competiciones favoritas de Deporte Total 360°.
+- `GET /api/sportsapi/statistics?type=...&id=...` — estadísticas seguras de partidos, resultados de carreras y clasificaciones.
+- `GET /api/sports` — catálogo antiguo de API-Sports, conservado por compatibilidad.
 - `GET /api/chat/messages` — devuelve los últimos mensajes de la sala pública.
 - `POST /api/chat/messages` — publica un mensaje `{ "name": "Alias", "text": "Mensaje" }` en esa misma sala.
 
@@ -39,6 +42,48 @@ Ejemplos:
 
 Las rutas antiguas de fútbol (`/api/fixtures`, `/api/live`,
 `/api/leagues`, `/api/standings`) se mantienen para compatibilidad.
+
+## SportsAPI.app — agenda, estadísticas y deportes favoritos
+
+La agenda nativa usa SportsAPI.app como proveedor principal. La clave se lee
+exclusivamente desde el secreto de Cloudflare Worker `SPORTAPI_API_KEY` y
+se envía al proveedor mediante `Authorization: Bearer`. La APK nunca recibe
+ni almacena esa clave.
+
+Los diez deportes configurados son:
+`football`, `basketball`, `baseball`, `ice-hockey`, `volleyball`,
+`mma`, `futsal`, `cycling`, `motorsport` y `handball`.
+El módulo `src/sportsapi_favorites.js` mantiene las competiciones masculinas
+y femeninas seleccionadas para cada deporte y descarta los eventos de otras
+competiciones. En carreras, ciclismo y motor se usan las series y las sesiones
+publicadas por el proveedor; no se inventan horas de salida.
+
+El planificador refresca la agenda por día UTC, obtiene las primeras páginas
+de los ocho deportes de partidos y los calendarios de las dos disciplinas de
+carreras. Las páginas adicionales de partidos se consultan de una en una,
+con una pausa mínima de un minuto entre páginas y un máximo de 40 ligas por
+deporte. Los marcadores en vivo globales se refrescan cada 30 minutos y se
+mezclan con la agenda diaria. Esto controla el uso de cuota; las consultas
+adicionales de estadísticas también consumen cuota de SportsAPI.
+
+Rutas nuevas:
+- `GET /api/sportsapi/favorites` — lista de los diez deportes y las competiciones favoritas.
+- `GET /api/live/auto/schedule` — agenda diaria y asignaciones automáticas compartidas.
+- `GET /api/sportsapi/statistics?type=fixture-statistics&id=ID` — estadísticas de un partido.
+- `GET /api/sportsapi/statistics?type=race-results&id=ID&session=ID_SESION` — resultados de una sesión o carrera.
+
+Los identificadores de partido y carrera se conservan en la agenda para abrir
+sus estadísticas. Las carreras se muestran por sesión (por ejemplo, prácticas,
+clasificación, carrera o etapas ciclistas) con las horas UTC exactas convertidas
+al huso horario local de cada dispositivo.
+
+La búsqueda automática de canales sigue siendo un proceso separado: SportsAPI
+aporta eventos, equipos, competiciones, fechas, marcadores y sesiones; el
+planificador compara nombres de equipos/eventos con las guías XMLTV y busca
+una señal directa válida en las listas M3U configuradas. SportsAPI no entrega
+vídeos ni enlaces IPTV. Una coincidencia EPG no garantiza que exista una señal
+reproducible; el Worker comprueba el manifiesto y no evita DRM, geobloqueos,
+inicios de sesión ni restricciones del proveedor.
 
 ## Catálogo de señales autorizadas para Deportes en vivo
 
@@ -73,6 +118,20 @@ en vivo. No pongas contraseñas ni tokens privados en URLs expuestas por esta
 ruta. Sin catálogo configurado, la ruta devuelve una lista vacía de forma
 segura.
 
+## Planificador central de transmisiones
+
+El Worker también ejecuta un planificador automático en la nube, independiente de cualquier teléfono:
+- Un Cron Trigger de Cloudflare ejecuta el planificador cada minuto.
+- Cuando `SPORTAPI_API_KEY` está configurada, el planificador consulta SportsAPI.app para los diez deportes favoritos, filtra las competiciones seleccionadas y conserva el último calendario válido ante errores temporales. MARCA se consulta únicamente como respaldo cuando la nueva clave no está configurada.
+- Cada cinco minutos combina las listas M3U y guías XMLTV integradas, cruza nombres de equipos con la programación EPG y ordena las señales en español antes de probar otros idiomas.
+- Diez minutos antes del inicio del evento empieza a comprobar manifiestos y segmentos directos. Una señal solo se publica si supera la comprobación disponible; las URL HTML, DRM, credenciales y geobloqueos no se eluden.
+- El estado común se guarda en un Durable Object SQLite. `GET /api/live/auto/schedule` entrega a todas las APK la misma agenda y las asignaciones verificadas, incluyendo hora final para liberar el reproductor.
+- Una guía EPG puede anunciar una emisión pero no crea el vídeo. Si ninguna señal coincide o responde, el evento sigue en espera y no se inventa una transmisión.
+
+El planificador continúa cuando el teléfono del propietario está apagado o la APK está desinstalada, una vez que este Worker actualizado esté desplegado en Cloudflare. Los teléfonos con la APK actualizada consultan el endpoint al estar conectados. Firebase Cloud Messaging envía un aviso al tema `deporte_total_360_live` cuando una señal directa queda verificada dentro de la ventana previa al evento. Cada APK se suscribe al tema solo si el usuario activa Notificaciones y se da de baja al desactivarlas. El Worker envía una sola notificación al tema, sin almacenar tokens de dispositivos. Al tocar el aviso, la APK abre Deportes en vivo; Android no permite forzar la reproducción con la app cerrada y el usuario debe pulsar Play. El envío requiere el secreto `FCM_SERVICE_ACCOUNT_JSON` en Cloudflare Worker.
+
+El contenido de la página MARCA puede cambiar o impedir el acceso automatizado. En tal caso el estado publicado marca la fuente como desactualizada o no disponible y conserva solo eventos anteriores que aún no hayan vencido; la captura estructurada de MARCA debe verificarse en los registros del Worker tras el primer despliegue.
+
 ## Configuración de Cloudflare
 
 Configura estos secretos/variables en el repositorio de GitHub usado por el
@@ -80,19 +139,18 @@ workflow de despliegue:
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
-- `APISPORTS_KEY`
+- `SPORTAPI_API_KEY` (obligatoria para la nueva agenda y estadísticas).
+- `APISPORTS_KEY` (solo si deseas mantener activas las rutas antiguas de API-Sports).
 
-El workflow publica `APISPORTS_KEY` en Cloudflare Worker mediante Wrangler.
+Además, configura `FCM_SERVICE_ACCOUNT_JSON` como secreto del Worker en Cloudflare Dashboard (Settings → Variables and Secrets). Debe contener el JSON de una cuenta de servicio del mismo proyecto Firebase, con permiso para enviar mensajes de Firebase Cloud Messaging. No guardes ese JSON en GitHub, el APK ni el repositorio. La APK debe usar los cuatro secretos cliente Firebase descritos en el README del repositorio de la app.
+
+El workflow publica `SPORTAPI_API_KEY` y, cuando esté configurada, `APISPORTS_KEY` en Cloudflare Worker mediante Wrangler. El secreto `SPORTAPI_API_KEY` debe guardarse en los secretos Actions de ESTE repositorio del Worker, no solo en el repositorio Flutter. El binding SQLite del planificador y su Cron Trigger se crean desde `wrangler.toml`.
 El Worker admite también `APIFOOTBALL_KEY` como nombre antiguo alternativo,
 pero el nombre recomendado es `APISPORTS_KEY`.
 
-## API-Sports: cobertura y cuotas
+## Cobertura, cuotas y caché de proveedores
 
-La aplicación solicita cada deporte a su API independiente. Una respuesta
-vacía no significa que la pantalla se haya detenido: la liga, la temporada o
-el deporte pueden no tener eventos/datos disponibles en ese momento. La
-cobertura y los endpoints dependen de la suscripción habilitada para cada API.
-El Worker conserva respuestas en caché para reducir consultas.
+SportsAPI.app se consulta por los diez deportes favoritos. Las primeras páginas se cargan una vez por jornada UTC; las páginas adicionales se consultan escalonadamente y los marcadores en vivo globales cada 30 minutos. Las pantallas de estadísticas generan consultas adicionales y también consumen cuota. Una respuesta vacía puede significar que no hay eventos ese día, que la competición no está dentro de la cobertura de la suscripción o que el proveedor no tiene datos para esa fecha. El Worker conserva la agenda y los marcadores en caché para reducir llamadas. Las rutas API-Sports antiguas permanecen disponibles únicamente para compatibilidad.
 
 ## Chat público
 
@@ -103,7 +161,7 @@ El Durable Object está incluido en `wrangler.toml` con una migración SQLite `v
 ## Seguridad
 
 - La clave API solo se lee desde los secretos del Worker.
-- Solo se permiten solicitudes GET y OPTIONS.
+- Los endpoints de lectura usan GET; el chat y el registro/baja de tokens FCM usan POST con validación de contenido.
 - Los recursos y parámetros se validan con listas permitidas.
 - Las respuestas incluyen CORS y tipos de contenido seguros.
 
