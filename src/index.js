@@ -997,16 +997,23 @@ const SPORTSAPI_COMPETITION_ALIASES = {
       "World Cup Qualification Europe", "World Cup Qualification Africa",
       "World Cup Qualification Asia", "World Cup Qualification Oceania",
       "World Cup Qualification South America", "World Cup Qualification CONCACAF",
-      "World Cup Qualification Intercontinental Play-offs"
+      "World Cup Qualification Intercontinental Play-offs",
+      "UEFA World Cup Qualifiers", "CONMEBOL World Cup Qualifiers",
+      "CONCACAF World Cup Qualifiers", "CAF World Cup Qualifiers",
+      "AFC World Cup Qualifiers", "OFC World Cup Qualifiers",
+      "FIFA World Cup Qualification"
     ],
     "Africa Cup of Nations": ["AFCON"],
+    "International Friendlies": ["Friendlies"],
     "OFC Men's Nations Cup": ["OFC Nations Cup"],
     "Liga F Moeve": ["Liga F", "Primera Division Women"],
     "Women's Super League": ["FA Women's Super League", "Women's Super League England"],
     "NWSL": ["National Women's Soccer League"],
     "Campeonato Brasileiro Feminino Série A1": ["Brasileirao Feminino Serie A1"],
+    "FIFA Women's World Cup": ["Women's World Cup"],
     "UEFA Women's EURO": ["Women's European Championship", "UEFA Women's European Championship"],
     "Women's Africa Cup of Nations": ["WAFCON", "Africa Cup of Nations Women"],
+    "CONCACAF W Championship": ["CONCACAF Women's Championship", "Concacaf Women's Championship"],
     "CONCACAF W Gold Cup": ["W Gold Cup", "Concacaf W Gold Cup"]
   },
   baseball: {
@@ -1014,16 +1021,16 @@ const SPORTSAPI_COMPETITION_ALIASES = {
     "WBSC Premier12": ["Premier12", "Premier 12"]
   },
   "ice-hockey": {
-    "Olympic Ice Hockey Tournament": ["Men's Olympic Ice Hockey Tournament", "Olympic Men's Ice Hockey"],
-    "Olympic Women's Ice Hockey Tournament": ["Women's Olympic Ice Hockey", "Olympic Women's Hockey"]
+    "Olympic Ice Hockey Tournament": ["Men's Olympic Ice Hockey Tournament", "Olympic Men's Ice Hockey", "Winter Olympics"],
+    "Olympic Women's Ice Hockey Tournament": ["Women's Olympic Ice Hockey", "Olympic Women's Hockey", "Winter Olympics"]
   },
   volleyball: {
     "Volleyball Nations League": ["Men's Volleyball Nations League", "VNL Men"],
     "FIVB Volleyball World Championship": ["FIVB Men's Volleyball World Championship", "Men's Volleyball World Championship"],
     "Women's Volleyball Nations League": ["FIVB Women's Volleyball Nations League", "VNL Women"],
     "FIVB Women's Volleyball World Championship": ["Women's Volleyball World Championship"],
-    "Olympic Volleyball Tournament": ["Men's Olympic Volleyball Tournament", "Men's Volleyball Olympic Tournament"],
-    "Women's Olympic Volleyball Tournament": ["Olympic Women's Volleyball Tournament"]
+    "Olympic Volleyball Tournament": ["Men's Olympic Volleyball Tournament", "Men's Volleyball Olympic Tournament", "Olympic Volleyball"],
+    "Women's Olympic Volleyball Tournament": ["Olympic Women's Volleyball Tournament", "Olympic Volleyball"]
   },
   futsal: {
     "Copa América de Futsal": ["Copa America Futsal"],
@@ -1045,8 +1052,8 @@ const SPORTSAPI_COMPETITION_ALIASES = {
   handball: {
     "IHF Men's World Championship": ["Men's World Championship", "World Championship Men"],
     "IHF Women's World Championship": ["Women's World Championship", "World Championship Women"],
-    "Olympic Handball Tournament": ["Men's Olympic Handball Tournament", "Olympic Men's Handball"],
-    "Women's Olympic Handball Tournament": ["Olympic Women's Handball Tournament"]
+    "Olympic Handball Tournament": ["Men's Olympic Handball Tournament", "Olympic Men's Handball", "Olympic Handball"],
+    "Women's Olympic Handball Tournament": ["Olympic Women's Handball Tournament", "Olympic Women's Handball"]
   }
 };
 
