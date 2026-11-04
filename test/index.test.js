@@ -375,6 +375,10 @@ test("catálogo de favoritos publica los diez deportes y competiciones", async (
   assert.ok(body.sports.some(sport => sport.id === "futsal"));
   assert.ok(body.sports.some(sport => sport.id === "cycling"));
   assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("UEFA Champions League"));
+  assert.deepEqual(body.sports.find(sport => sport.id === "basketball").competitions, ["NBA", "WNBA"]);
+  assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("Women's Super League"));
+  assert.ok(body.sports.find(sport => sport.id === "cycling").competitions.includes("Tour de France Femmes avec Zwift"));
+  assert.ok(!body.sports.find(sport => sport.id === "basketball").competitions.includes("FIBA World Cup"));
 });
 
 test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () => {
@@ -384,7 +388,7 @@ test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () =>
     capturedUrl = new URL(url);
     capturedAuthorization = options.headers.Authorization;
     return new Response(JSON.stringify({
-      data: [{ id: 123, sport: "football" }],
+      data: [{ id: 123, sport: "football", league: { id: 195828, name: "Premier League" } }],
       meta: { date: "2026-11-03", count: 1 }
     }), { status: 200 });
   };
@@ -413,6 +417,100 @@ test("proxy SportsAPI.app valida el deporte antes de llamar al proveedor", async
   );
   assert.equal(response.status, 400);
   assert.equal(called, false);
+});
+
+test("SportsAPI filtra partidos a las competiciones favoritas masculinas y femeninas", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    data: [
+      { id: 11, league: { id: 1, name: "Premier League" } },
+      { id: 12, league: { id: 2, name: "Championship" } },
+      { id: 13, league: { id: 3, name: "LaLiga" } },
+      { id: 14, league: { id: 4, name: "NWSL" } }
+    ],
+    meta: { count: 4, hasNextPage: false }
+  }), { status: 200 });
+
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-03&sport=football&page=0"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data.map(item => item.league.name), [
+    "Premier League", "LaLiga EA SPORTS", "NWSL"
+  ]);
+  assert.equal(body.meta.count, 3);
+  assert.equal(body.meta.favoriteCompetitionFilter, true);
+});
+
+test("SportsAPI filtra ciclismo por nombre de carrera y motor por serie", async () => {
+  globalThis.fetch = async url => {
+    const upstream = new URL(url);
+    if (upstream.pathname.endsWith("/races")) {
+      if (upstream.searchParams.get("sport") === "cycling") {
+        return new Response(JSON.stringify({
+          data: [
+            { id: 21, name: "Tour de France", series: { id: 1, name: "Cycling Men" } },
+            { id: 22, name: "Paris-Nice", series: { id: 1, name: "Cycling Men" } }
+          ],
+          meta: { count: 2 }
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        data: [
+          { id: 31, name: "Australian GP", series: { id: 2, name: "Formula 1" } },
+          { id: 32, name: "NASCAR Cup", series: { id: 3, name: "NASCAR Cup Series" } }
+        ],
+        meta: { count: 2 }
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [], meta: {} }), { status: 200 });
+  };
+
+  const cycling = await worker.fetch(
+    request("/api/sportsapi/races?date=2026-11-03&sport=cycling"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  const cyclingBody = await cycling.json();
+  assert.deepEqual(cyclingBody.data.map(item => item.name), ["Tour de France"]);
+  assert.equal(cyclingBody.data[0].series.name, "Cycling Men");
+
+  const motor = await worker.fetch(
+    request("/api/sportsapi/races?date=2026-11-03&sport=motorsport"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  const motorBody = await motor.json();
+  assert.deepEqual(motorBody.data.map(item => item.series.name), ["Formula 1"]);
+});
+
+test("SportsAPI filtra también una respuesta sin filtrar que ya estuviera en caché", async () => {
+  const cacheEntries = installCache();
+  const url = "https://api.sportsapi.app/v2/fixtures?date=2026-11-03&sport=football&page=0";
+  cacheEntries.set(url, new Response(JSON.stringify({
+    data: [
+      { id: 41, league: { id: 1, name: "Premier League" } },
+      { id: 42, league: { id: 2, name: "Championship" } }
+    ],
+    meta: { count: 2 }
+  }), { status: 200, headers: { "Cache-Control": "public, max-age=120" } }));
+
+  let upstreamCalled = false;
+  globalThis.fetch = async () => {
+    upstreamCalled = true;
+    return new Response(JSON.stringify({ data: [], meta: {} }), { status: 200 });
+  };
+
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-03&sport=football&page=0"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  const body = await response.json();
+
+  assert.equal(upstreamCalled, false);
+  assert.deepEqual(body.data.map(item => item.league.name), ["Premier League"]);
+  assert.equal(body.meta.favoriteCompetitionFilter, true);
+  assert.equal(response.headers.get("X-Data-Source"), "cache");
 });
 
 test("proxy SportsAPI.app admite resultados de carreras con sesión", async () => {

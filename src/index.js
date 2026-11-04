@@ -891,17 +891,242 @@ function liveSourcesResponse(request, env) {
 const SPORTSAPI_BASE = "https://api.sportsapi.app/v2";
 const SPORTSAPI_SLUGS = new Set(["football","basketball","baseball","ice-hockey","volleyball","mma","futsal","cycling","motorsport","handball"]);
 const FAVORITE_SPORTS = [
-{id:"football",name:"Fútbol",competitions:["LaLiga EA SPORTS","Premier League","Serie A","Bundesliga","Ligue 1","Major League Soccer","Brasileirão Série A","FIFA World Cup","UEFA European Championship","Copa América","UEFA World Cup Qualifiers","CONMEBOL World Cup Qualifiers","CONCACAF World Cup Qualifiers","CAF World Cup Qualifiers","AFC World Cup Qualifiers","OFC World Cup Qualifiers","UEFA Champions League","International Friendlies","FIFA Club World Cup","Africa Cup of Nations","AFC Asian Cup","CONCACAF Gold Cup","UEFA Nations League","CONCACAF Nations League","OFC Men's Nations Cup","Copa Libertadores","Copa Sudamericana","FA Cup","Copa del Rey","Coppa Italia","DFB-Pokal","Liga F","Women's Super League","Serie A Women","Google Pixel Frauen-Bundesliga","Première Ligue","NWSL","Campeonato Brasileiro Feminino Série A1","FIFA Women's World Cup","UEFA Women's EURO","Copa América Femenina","UEFA Women's European Qualifiers","AFC Women's Asian Cup Qualifiers","Women's Africa Cup of Nations Qualifiers","CONCACAF W Championship Qualifiers","Copa América Femenina Qualifiers","OFC Women's Nations Cup Qualifiers","WAFCON","AFC Women's Asian Cup","CONCACAF W Gold Cup","CONCACAF W Championship","UEFA Women's Nations League","OFC Women's Nations Cup","UEFA Women's Champions League","FIFA Women's Champions Cup","FIFA Women's Club World Cup","CONMEBOL Libertadores Femenina","Women's FA Cup","Copa de la Reina","Coppa Italia Women","DFB-Pokal Frauen","Coupe de France Féminine"]},
-{id:"basketball",name:"Baloncesto",competitions:["NBA","WNBA","FIBA World Cup","Olympic Basketball"]},
-{id:"baseball",name:"Béisbol",competitions:["MLB","World Baseball Classic","WBSC Premier12","WBSC Women's Baseball World Cup"]},
-{id:"ice-hockey",name:"Hockey sobre hielo",competitions:["NHL","PWHL","IIHF Ice Hockey World Championship","IIHF Women's World Championship","Winter Olympics"]},
-{id:"volleyball",name:"Voleibol",competitions:["Volleyball Nations League","FIVB Volleyball World Championship","FIVB Men's Club World Championship","FIVB Women's Club World Championship","Olympic Volleyball"]},
-{id:"mma",name:"MMA",competitions:["UFC"]},
-{id:"futsal",name:"Fútbol sala",competitions:["FIFA Futsal World Cup","UEFA Futsal EURO","Copa América de Futsal","AFC Futsal Asian Cup","FIFA Futsal Women's World Cup","AFC Women's Futsal Asian Cup","Copa América de Futsal Femenina"]},
-{id:"cycling",name:"Ciclismo",competitions:["La Vuelta a España","La Vuelta Femenina","Giro d'Italia","Giro d'Italia Women","Tour de France","Tour de France Femmes"]},
-{id:"motorsport",name:"Deportes de motor",competitions:["Formula 1","MotoGP","F1 Academy","FIM Women's Circuit Racing World Championship"]},
-{id:"handball",name:"Balonmano",competitions:["IHF Men's World Championship","EHF EURO Men","Olympic Handball","IHF Women's World Championship","EHF EURO Women","Olympic Women's Handball"]}
+  {
+    id: "football",
+    name: "Fútbol",
+    competitions: [
+      "LaLiga EA SPORTS", "Premier League", "Serie A", "Bundesliga", "Ligue 1",
+      "Major League Soccer", "Brasileirão Série A", "FIFA World Cup",
+      "UEFA European Championship", "Copa América", "FIFA World Cup Qualifiers",
+      "International Friendlies", "Africa Cup of Nations", "AFC Asian Cup",
+      "CONCACAF Gold Cup", "UEFA Nations League", "CONCACAF Nations League",
+      "OFC Men's Nations Cup", "UEFA Champions League", "FIFA Club World Cup",
+      "Copa Libertadores", "Copa Sudamericana", "FA Cup", "Copa del Rey",
+      "Coppa Italia", "DFB-Pokal", "Liga F Moeve", "Women's Super League",
+      "Serie A Women", "Google Pixel Frauen-Bundesliga", "Première Ligue", "NWSL",
+      "Campeonato Brasileiro Feminino Série A1", "FIFA Women's World Cup",
+      "UEFA Women's EURO", "Copa América Femenina",
+      "UEFA Women's European Qualifiers", "AFC Women's Asian Cup",
+      "Women's Africa Cup of Nations", "CONCACAF W Championship",
+      "OFC Women's Nations Cup", "International Women's Friendlies",
+      "CONCACAF W Gold Cup", "UEFA Women's Nations League"
+    ]
+  },
+  {
+    id: "basketball",
+    name: "Baloncesto",
+    competitions: ["NBA", "WNBA"]
+  },
+  {
+    id: "baseball",
+    name: "Béisbol",
+    competitions: [
+      "Major League Baseball", "World Baseball Classic", "WBSC Premier12",
+      "WBSC Women's Baseball World Cup"
+    ]
+  },
+  {
+    id: "ice-hockey",
+    name: "Hockey sobre hielo",
+    competitions: [
+      "NHL", "PWHL", "IIHF Ice Hockey World Championship",
+      "IIHF Women's World Championship", "Olympic Ice Hockey Tournament",
+      "Olympic Women's Ice Hockey Tournament"
+    ]
+  },
+  {
+    id: "volleyball",
+    name: "Voleibol",
+    competitions: [
+      "Volleyball Nations League", "FIVB Volleyball World Championship",
+      "FIVB Men's Club World Championship", "Olympic Volleyball Tournament",
+      "Women's Volleyball Nations League", "FIVB Women's Volleyball World Championship",
+      "FIVB Women's Club World Championship", "Women's Olympic Volleyball Tournament"
+    ]
+  },
+  {
+    id: "mma",
+    name: "MMA",
+    competitions: ["UFC"]
+  },
+  {
+    id: "futsal",
+    name: "Fútbol sala",
+    competitions: [
+      "FIFA Futsal World Cup", "UEFA Futsal EURO", "Copa América de Futsal",
+      "AFC Futsal Asian Cup", "FIFA Futsal Women's World Cup",
+      "AFC Women's Futsal Asian Cup", "Copa América de Futsal Femenina"
+    ]
+  },
+  {
+    id: "cycling",
+    name: "Ciclismo",
+    competitions: [
+      "Vuelta a España", "Giro d'Italia", "Tour de France",
+      "La Vuelta Femenina", "Giro d'Italia Women",
+      "Tour de France Femmes avec Zwift"
+    ]
+  },
+  {
+    id: "motorsport",
+    name: "Deportes de motor",
+    competitions: [
+      "Formula 1", "MotoGP", "F1 Academy",
+      "FIM Women's Circuit Racing World Championship (WorldWCR)"
+    ]
+  },
+  {
+    id: "handball",
+    name: "Balonmano",
+    competitions: [
+      "IHF Men's World Championship", "EHF EURO Men", "Olympic Handball Tournament",
+      "IHF Women's World Championship", "EHF EURO Women",
+      "Women's Olympic Handball Tournament"
+    ]
+  }
 ];
+
+const SPORTSAPI_COMPETITION_ALIASES = {
+  football: {
+    "LaLiga EA SPORTS": ["LaLiga", "La Liga", "Primera Division"],
+    "Major League Soccer": ["MLS"],
+    "Brasileirão Série A": ["Campeonato Brasileiro Série A", "Brasileirao", "Serie A Brazil"],
+    "UEFA European Championship": ["UEFA Euro", "Euro"],
+    "FIFA World Cup Qualifiers": [
+      "World Cup Qualification Europe", "World Cup Qualification Africa",
+      "World Cup Qualification Asia", "World Cup Qualification Oceania",
+      "World Cup Qualification South America", "World Cup Qualification CONCACAF",
+      "World Cup Qualification Intercontinental Play-offs",
+      "UEFA World Cup Qualifiers", "CONMEBOL World Cup Qualifiers",
+      "CONCACAF World Cup Qualifiers", "CAF World Cup Qualifiers",
+      "AFC World Cup Qualifiers", "OFC World Cup Qualifiers",
+      "FIFA World Cup Qualification"
+    ],
+    "Africa Cup of Nations": ["AFCON"],
+    "OFC Men's Nations Cup": ["OFC Nations Cup"],
+    "Liga F Moeve": ["Liga F", "Primera Division Women"],
+    "Women's Super League": ["FA Women's Super League", "Women's Super League England"],
+    "NWSL": ["National Women's Soccer League"],
+    "Campeonato Brasileiro Feminino Série A1": ["Brasileirao Feminino Serie A1"],
+    "FIFA Women's World Cup": ["Women's World Cup"],
+    "UEFA Women's EURO": ["Women's European Championship", "UEFA Women's European Championship"],
+    "Women's Africa Cup of Nations": ["WAFCON", "Africa Cup of Nations Women"],
+    "CONCACAF W Championship": ["CONCACAF Women's Championship", "Concacaf Women's Championship"],
+    "CONCACAF W Gold Cup": ["W Gold Cup", "Concacaf W Gold Cup"]
+  },
+  baseball: {
+    "Major League Baseball": ["MLB"],
+    "WBSC Premier12": ["Premier12", "Premier 12"]
+  },
+  "ice-hockey": {
+    "Olympic Ice Hockey Tournament": ["Men's Olympic Ice Hockey Tournament", "Olympic Men's Ice Hockey"],
+    "Olympic Women's Ice Hockey Tournament": ["Women's Olympic Ice Hockey", "Olympic Women's Hockey"]
+  },
+  volleyball: {
+    "Volleyball Nations League": ["Men's Volleyball Nations League", "VNL Men"],
+    "FIVB Volleyball World Championship": ["FIVB Men's Volleyball World Championship", "Men's Volleyball World Championship"],
+    "Women's Volleyball Nations League": ["FIVB Women's Volleyball Nations League", "VNL Women"],
+    "FIVB Women's Volleyball World Championship": ["Women's Volleyball World Championship"],
+    "Olympic Volleyball Tournament": ["Men's Olympic Volleyball Tournament", "Men's Volleyball Olympic Tournament"],
+    "Women's Olympic Volleyball Tournament": ["Olympic Women's Volleyball Tournament"]
+  },
+  futsal: {
+    "Copa América de Futsal": ["Copa America Futsal"],
+    "Copa América de Futsal Femenina": ["Women's Copa America Futsal", "Copa America Femenina de Futsal"]
+  },
+  cycling: {
+    "Vuelta a España": ["La Vuelta", "La Vuelta a España", "Vuelta a Espana"],
+    "Giro d'Italia": ["Giro d’Italia", "Giro d Italia"],
+    "La Vuelta Femenina": ["La Vuelta Femenina by Carrefour.es"],
+    "Giro d'Italia Women": ["Giro d’Italia Women", "Giro Women"],
+    "Tour de France Femmes avec Zwift": ["Tour de France Femmes", "Tour de France Femmes avec Zwift"]
+  },
+  motorsport: {
+    "Formula 1": ["Formula One", "FIA Formula One World Championship"],
+    "FIM Women's Circuit Racing World Championship (WorldWCR)": [
+      "WorldWCR", "FIM Women's Circuit Racing World Championship"
+    ]
+  },
+  handball: {
+    "IHF Men's World Championship": ["Men's World Championship", "World Championship Men"],
+    "IHF Women's World Championship": ["Women's World Championship", "World Championship Women"],
+    "Olympic Handball Tournament": ["Men's Olympic Handball Tournament", "Olympic Men's Handball"],
+    "Women's Olympic Handball Tournament": ["Olympic Women's Handball Tournament", "Olympic Women's Handball"]
+  }
+};
+
+function normalizeFavoriteCompetition(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function matchFavoriteCompetition(sportId, providerName) {
+  const sport = FAVORITE_SPORTS.find(item => item.id === sportId);
+  if (!sport) return null;
+  const target = normalizeFavoriteCompetition(providerName);
+  if (!target) return null;
+
+  for (const canonical of sport.competitions) {
+    const aliases = SPORTSAPI_COMPETITION_ALIASES[sportId]?.[canonical] || [];
+    if ([canonical, ...aliases].some(
+      name => normalizeFavoriteCompetition(name) === target
+    )) {
+      return canonical;
+    }
+  }
+  return null;
+}
+
+function filterSportsApiFavoriteData(payload, request, route) {
+  const params = new URL(request.url).searchParams;
+  const sportId = params.get("sport");
+  if (!params.has("date") || !sportId || !Array.isArray(payload?.data)) {
+    return payload;
+  }
+
+  const isFixtureList = route.upstream === "fixtures" &&
+    sportId !== "cycling" && sportId !== "motorsport";
+  const isRaceList = route.upstream === "races" &&
+    (sportId === "cycling" || sportId === "motorsport");
+  if (!isFixtureList && !isRaceList) return payload;
+
+  const filtered = [];
+  for (const item of payload.data) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const providerCompetition = isFixtureList
+      ? item.league?.name
+      : sportId === "cycling" ? item.name : item.series?.name;
+    const canonical = matchFavoriteCompetition(sportId, providerCompetition);
+    if (!canonical) continue;
+
+    if (isFixtureList && item.league && typeof item.league === "object") {
+      filtered.push({ ...item, league: { ...item.league, name: canonical } });
+    } else if (isRaceList && sportId === "cycling") {
+      filtered.push({ ...item, name: canonical });
+    } else if (isRaceList && item.series && typeof item.series === "object") {
+      filtered.push({ ...item, series: { ...item.series, name: canonical } });
+    } else {
+      filtered.push(item);
+    }
+  }
+
+  return {
+    ...payload,
+    data: filtered,
+    meta: {
+      ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
+      count: filtered.length,
+      favoriteCompetitionFilter: true
+    }
+  };
+}
+
 function sportsApiFavoritesResponse() {
   return json({sports:FAVORITE_SPORTS.map(s=>({...s,kind:s.id==="cycling"||s.id==="motorsport"?"races":"fixtures"}))},200,{"Cache-Control":"public, max-age=3600"});
 }
@@ -938,14 +1163,25 @@ async function sportsApiProxy(request,env,route) {
   const cacheKey=new Request(upstreamUrl,{method:"GET"});
   const cache=globalThis.caches?.default;
   const cached=await cacheMatch(cache,cacheKey);
-  if(cached) { const response=new Response(cached.body,cached); response.headers.set("Access-Control-Allow-Origin","*"); response.headers.set("X-Data-Source","cache"); return response; }
+  if(cached) {
+    try {
+      const cachedPayload = await cached.json();
+      return json(filterSportsApiFavoriteData(cachedPayload, request, route), 200, {
+        "Cache-Control": cached.headers.get("Cache-Control") || "public, max-age=120",
+        "X-Data-Source": "cache"
+      });
+    } catch {
+      // Una entrada antigua o corrupta no debe impedir consultar al proveedor.
+    }
+  }
   try {
     const upstream=await fetch(upstreamUrl,{method:"GET",headers:{"Authorization":"Bearer "+apiKey,"Accept":"application/json"}});
     const body=await upstream.text(); let parsed;
     try { parsed=JSON.parse(body); } catch { return json({error:{code:"invalid_upstream_response",message:"SportsAPI devolvió una respuesta no JSON."}},502); }
     if(!upstream.ok) { const retry=upstream.headers.get("Retry-After"); return json(parsed,upstream.status,{"Cache-Control":"no-store",...(retry?{"Retry-After":retry}:{})}); }
     const ttl=route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"?3600:route.upstream==="livescores"?15:route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/")?45:120;
-    const response=json(parsed,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
+    const filteredPayload = filterSportsApiFavoriteData(parsed, request, route);
+    const response=json(filteredPayload,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
     await cachePut(cache,cacheKey,response.clone()); return response;
   } catch { return json({error:{code:"upstream_unavailable",message:"No se pudo conectar con SportsAPI."}},503,{"Retry-After":"30"}); }
 }

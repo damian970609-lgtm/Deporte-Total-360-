@@ -116,6 +116,7 @@ caché para limitar consultas. La agenda solicita una página por deporte; la
 cobertura de cada competición depende del catálogo y del plan contratado.
 La lista favorita es la configuración deseada, no una garantía de que cada
 torneo tenga fixtures publicados en el proveedor.
+El Worker aplica una lista permitida de competiciones en las respuestas diarias de partidos y carreras. Se excluyen las ligas y carreras no seleccionadas antes de entregar la agenda a la APK. En ciclismo, se filtra por el nombre de cada carrera, porque la serie del proveedor agrupa únicamente el calendario masculino o femenino.
 
 Para desplegar, agrega SPORTAPI_API_KEY como GitHub Actions secret del
 repositorio del Worker. El workflow lo instala en Cloudflare como secreto y
