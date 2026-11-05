@@ -15,6 +15,9 @@ const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SPORTS_WORDS = /\b(sports?|deportes?|espn|fox sports|tudn|bein sports|dazn|futbol|fútbol|football|soccer|basketball|nba|mlb|ufc|mma|motogp|formula 1|f1|tennis|tenis|golf|rugby|cricket|baseball|hockey|volleyball|voleibol|sportv|gol tv|tyc sports|win sports|teledeporte|liga mx|champions)\b/i;
 
 function response(data, status = 200) {
+  if (status === 204 || status === 304) {
+    return new Response(null, { status, headers: JSON_HEADERS });
+  }
   return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
 }
 
@@ -435,13 +438,7 @@ export class ChannelCatalogRoom {
 
   async alarm() {
     try {
-      const result = await this.refreshBatch();
-      const queued = Number(Array.from(this.sql.exec(
-        "SELECT COUNT(*) AS total FROM sources WHERE status = 'queued'"
-      ))[0] && Array.from(this.sql.exec(
-        "SELECT COUNT(*) AS total FROM sources WHERE status = 'queued'"
-      ))[0].total || 0);
-      if (queued > 0) await this.state.storage.setAlarm(Date.now() + 60 * 1000);
+      await this.refreshBatch();
     } catch {
       await this.state.storage.setAlarm(Date.now() + 5 * 60 * 1000);
     }
@@ -504,12 +501,14 @@ export class ChannelCatalogRoom {
         results.push({ label: source.label, imported: 0, status: "error", error: message });
       }
     }
-    const queued = Number(Array.from(this.sql.exec(
-      "SELECT COUNT(*) AS total FROM sources WHERE status = 'queued'"
-    ))[0] && Array.from(this.sql.exec(
-      "SELECT COUNT(*) AS total FROM sources WHERE status = 'queued'"
-    ))[0].total || 0);
-    if (queued > 0) await this.state.storage.setAlarm(Date.now() + 60 * 1000);
-    return { processed: due.length, queued, imported, results };
+    const nextRows = Array.from(this.sql.exec(
+      "SELECT MIN(next_refresh_at) AS next_at FROM sources"
+    ));
+    const nextAt = Number(nextRows[0] && nextRows[0].next_at || 0);
+    if (nextAt > 0) {
+      const alarmAt = nextAt <= Date.now() ? Date.now() + 60 * 1000 : nextAt;
+      await this.state.storage.setAlarm(alarmAt);
+    }
+    return { processed: due.length, queued: due.length, imported, results };
   }
 }

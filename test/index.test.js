@@ -527,3 +527,24 @@ test("proxy SportsAPI.app admite resultados de carreras con sesión", async () =
   assert.equal(capturedUrl.pathname, "/v2/races/987/results");
   assert.equal(capturedUrl.searchParams.get("session"), "654");
 });
+
+
+test("catálogo de canales devuelve un estado explícito cuando el Durable Object no está enlazado", async () => {
+  const response = await worker.fetch(request("/api/channels"), {});
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.configured, false);
+  assert.equal(body.error.code, "channel_catalog_not_configured");
+});
+
+test("el panel de canales exige configurar OAuth antes de aceptar administración", async () => {
+  const response = await worker.fetch(request("/api/channels/admin/catalog"), {});
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "google_oauth_not_configured");
+});
+
+test("las rutas de canales rechazan métodos que no están autorizados", async () => {
+  const response = await worker.fetch(request("/api/channels", "POST"), {});
+  assert.equal(response.status, 404);
+});
