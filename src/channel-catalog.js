@@ -20,7 +20,7 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
   if (/^(en|eng|english|ingles)([-_].*)?$/.test(declared)) return "en";
 
   const descriptiveText = normalize(name + " " + groupTitle);
-  if (/\b(espanol|spanish|castellano|latino|latina|latam)\b/.test(descriptiveText)) return "es";
+  if (/\b(espanol(?:a)?|spanish|castellano|latino|latina|latam)\b/.test(descriptiveText)) return "es";
   if (/\b(english|ingles)\b/.test(descriptiveText)) return "en";
   return "unknown";
 }
