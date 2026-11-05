@@ -223,7 +223,12 @@ export async function handleChannelRoutes(request, env, path) {
   const method = request.method.toUpperCase();
 
   if (path === "/api/channels" && method === "GET") {
-    return callCatalog(env, "/catalog?scope=public");
+    const incoming = new URL(request.url);
+    const offset = Math.max(
+      0,
+      Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0)
+    );
+    return callCatalog(env, "/catalog?scope=public&offset=" + offset);
   }
 
   if (path === "/api/channels/favorites") {
