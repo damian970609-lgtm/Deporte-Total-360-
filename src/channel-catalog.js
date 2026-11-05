@@ -8,6 +8,22 @@ const JSON_HEADERS = {
 };
 
 const ADMIN_EMAIL_DEFAULT = "damian970609@gmail.com";
+
+export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = "") {
+  const normalize = value => String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+  const declared = normalize(declaredLanguage).split(/[;,|/]/)[0].trim();
+  if (/^(es|spa|spanish|espanol|castellano)([-_].*)?$/.test(declared)) return "es";
+  if (/^(en|eng|english|ingles)([-_].*)?$/.test(declared)) return "en";
+
+  const descriptiveText = normalize(name + " " + groupTitle);
+  if (/\b(espanol|spanish|castellano|latino|latina|latam)\b/.test(descriptiveText)) return "es";
+  if (/\b(english|ingles)\b/.test(descriptiveText)) return "en";
+  return "unknown";
+}
 const MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
 const MAX_IMPORTED_CHANNELS = 12000;
 const REFRESH_BATCH_SIZE = 3;
@@ -99,11 +115,13 @@ function parseM3u(text, sourceUrl) {
     }
     if (name && validStreamUrl(streamUrl, sourceUrl)) {
       const group = cleanText(attrs["group-title"] || "", 100);
+      const declaredLanguage = attrs["tvg-language"] || attrs["language"] || attrs["lang"] || "";
       channels.push({
         name,
         url: streamUrl,
         logoUrl: validPublicHttpsUrl(attrs["tvg-logo"]) ? attrs["tvg-logo"] : "",
         groupTitle: group,
+        language: detectChannelLanguage(declaredLanguage, name, group),
         isSports: SPORTS_WORDS.test(name + " " + group) ? 1 : 0
       });
       if (channels.length >= MAX_IMPORTED_CHANNELS) break;
@@ -279,6 +297,25 @@ export async function handleChannelRoutes(request, env, path) {
     });
   }
 
+  const languagePrefix = "/api/channels/admin/channels/";
+  if (path.startsWith(languagePrefix) && path.endsWith("/language") && method === "PATCH") {
+    const channelId = path.slice(languagePrefix.length, -"/language".length);
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(channelId)) {
+      return response({ error: "Identificador de canal no válido." }, 400);
+    }
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    const value = String(payload && payload.language || "").trim().toLowerCase();
+    if (!["es", "en", "unknown"].includes(value)) {
+      return response({ error: "El idioma debe ser es, en o unknown." }, 400);
+    }
+    return callCatalog(env, "/language/" + encodeURIComponent(channelId), "PATCH", {
+      language: value
+    });
+  }
+
   return response({ error: "Ruta de administración no encontrada." }, 404);
 }
 
@@ -292,8 +329,13 @@ export class ChannelCatalogRoom {
       "id TEXT PRIMARY KEY, identifier TEXT NOT NULL UNIQUE, name TEXT NOT NULL, " +
       "stream_url TEXT NOT NULL UNIQUE, logo_url TEXT NOT NULL DEFAULT '', " +
       "group_title TEXT NOT NULL DEFAULT '', is_sports INTEGER NOT NULL DEFAULT 0, " +
-      "visible INTEGER NOT NULL DEFAULT 0, source_url TEXT NOT NULL, updated_at TEXT NOT NULL)"
+      "language TEXT NOT NULL DEFAULT 'unknown', visible INTEGER NOT NULL DEFAULT 0, " +
+      "source_url TEXT NOT NULL, updated_at TEXT NOT NULL)"
     );
+    const channelColumns = Array.from(this.sql.exec("PRAGMA table_info(channels)"));
+    if (!channelColumns.some(column => column.name === "language")) {
+      this.sql.exec("ALTER TABLE channels ADD COLUMN language TEXT NOT NULL DEFAULT 'unknown'");
+    }
     this.sql.exec("CREATE INDEX IF NOT EXISTS idx_channels_sports_visible ON channels(is_sports, visible, name)");
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS sources (" +
@@ -327,7 +369,7 @@ export class ChannelCatalogRoom {
       ));
       const total = Number(countRows[0] && countRows[0].total || 0);
       const rows = Array.from(this.sql.exec(
-        "SELECT id, identifier, name, stream_url, logo_url, group_title, is_sports, visible " +
+        "SELECT id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible " +
         "FROM channels WHERE " + where + filter +
         " ORDER BY name COLLATE NOCASE LIMIT 200 OFFSET ?",
         ...params, offset
@@ -345,6 +387,7 @@ export class ChannelCatalogRoom {
           logoUrl: row.logo_url,
           groupTitle: row.group_title,
           isSports: Boolean(row.is_sports),
+          language: ["es", "en"].includes(row.language) ? row.language : "unknown",
           visible: Boolean(row.visible)
         }))
       });
@@ -402,6 +445,32 @@ export class ChannelCatalogRoom {
       this.sql.exec("UPDATE channels SET visible = ?, updated_at = ? WHERE id = ?",
         visible ? 1 : 0, new Date().toISOString(), visibility[1]);
       return response({ updated: true, visible });
+    }
+
+    const languagePrefix = "/language/";
+    if (path.startsWith(languagePrefix) && request.method === "PATCH") {
+      const channelId = path.slice(languagePrefix.length);
+      if (!/^[a-zA-Z0-9_-]{1,100}$/.test(channelId)) {
+        return response({ error: "Identificador de canal no válido." }, 400);
+      }
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const value = String(payload && payload.language || "").trim().toLowerCase();
+      if (!["es", "en", "unknown"].includes(value)) {
+        return response({ error: "Idioma no válido." }, 400);
+      }
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM channels WHERE id = ?",
+        channelId
+      ))[0];
+      if (!existing) return response({ error: "Canal no encontrado." }, 404);
+      this.sql.exec(
+        "UPDATE channels SET language = ?, updated_at = ? WHERE id = ?",
+        value, new Date().toISOString(), channelId
+      );
+      return response({ updated: true, language: value });
     }
 
     if (path === "/favorites" && request.method === "GET") {
@@ -480,13 +549,14 @@ export class ChannelCatalogRoom {
         for (const channel of parsed) {
           const identifier = await identifierFor(channel.name, channel.url);
           this.sql.exec(
-            "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, visible, source_url, updated_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
+            "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
             "name = excluded.name, identifier = excluded.identifier, logo_url = excluded.logo_url, " +
-            "group_title = excluded.group_title, is_sports = excluded.is_sports, source_url = excluded.source_url, " +
-            "updated_at = excluded.updated_at",
+            "group_title = excluded.group_title, is_sports = excluded.is_sports, " +
+            "language = CASE WHEN excluded.language != 'unknown' THEN excluded.language ELSE channels.language END, " +
+            "source_url = excluded.source_url, updated_at = excluded.updated_at",
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
-            channel.groupTitle, channel.isSports, source.url, timestamp
+            channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
           );
         }
         imported += parsed.length;
