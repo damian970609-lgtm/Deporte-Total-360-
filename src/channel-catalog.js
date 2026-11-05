@@ -222,6 +222,17 @@ async function callCatalog(env, path, method = "GET", payload = null, headers = 
 export async function handleChannelRoutes(request, env, path) {
   const method = request.method.toUpperCase();
 
+  // El ID de cliente OAuth es público por diseño. Esta ruta permite que la APK
+  // compruebe que usa el mismo cliente Web configurado en el Worker.
+  if (path === "/api/channels/auth-config") {
+    if (method !== "GET") return response({ error: "Método no permitido" }, 405);
+    const clientId = String(env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
+    if (!clientId) return response({
+      configured: false,
+      error: { code: "google_oauth_not_configured", message: "Falta configurar GOOGLE_OAUTH_CLIENT_ID en Cloudflare." }
+    }, 503);
+    return response({ configured: true, clientId }, 200);
+  }
   if (path === "/api/channels" && method === "GET") {
     const incoming = new URL(request.url);
     const offset = Math.max(
