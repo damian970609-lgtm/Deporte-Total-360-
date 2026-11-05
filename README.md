@@ -140,3 +140,39 @@ El Durable Object está incluido en `wrangler.toml` con una migración SQLite `v
 
 `npm test` ejecuta las pruebas Node.js.
 El workflow de GitHub Actions ejecuta las pruebas antes de desplegar el Worker.
+
+## Catálogo global de canales deportivos (Cloudflare)
+
+La APK consulta `GET /api/channels`, que solo publica las señales deportivas
+que el administrador haya marcado como visibles. Cada canal recibe un ID estable
+(slug del nombre y huella corta de la URL). El panel administrador también ve
+ese ID; la URL multimedia solo aparece en las vistas de la aplicación después
+de publicar el canal.
+
+El catálogo, las listas fuente y los favoritos se guardan en un Durable Object
+SQLite de Cloudflare. La importación se procesa en lotes pequeños y continúa
+aunque la aplicación esté cerrada o desinstalada. Un Cron Trigger vuelve a
+consultar las fuentes cada seis horas.
+
+Rutas:
+- `GET /api/channels`: catálogo público visible.
+- `GET/PUT /api/channels/favorites`: favoritos privados por identidad Google.
+- `GET /api/channels/admin/catalog?q=...`: catálogo de administración.
+- `GET/POST /api/channels/admin/sources`: ver y registrar listas M3U.
+- `POST /api/channels/admin/refresh`: iniciar importación/actualización.
+- `PATCH /api/channels/admin/channels/{id}/visibility`: publicar u ocultar.
+
+La API verifica un ID token de Google, su audiencia `GOOGLE_OAUTH_CLIENT_ID`,
+emisor, caducidad y correo verificado. Solo el correo indicado en
+`CHANNELS_ADMIN_EMAIL` puede usar el panel administrador; por defecto es
+`damian970609@gmail.com`. La APK no contiene una clave maestra. Configura
+`GOOGLE_OAUTH_CLIENT_ID` como secreto del Worker y como secreto de Actions de
+la APK. Usa el ID de cliente OAuth de tipo Web y registra también el cliente
+Android con el package name y SHA-1 del certificado de firma de la APK.
+
+Las listas añadidas empiezan ocultas. El nombre/grupo se utiliza para sugerir
+la categoría deportiva; el administrador debe confirmar que puede distribuir
+cada señal antes de publicarla. Solo se aceptan listas M3U HTTPS y flujos
+HTTPS directos HLS (.m3u8) o MP4. No se extraen reproductores web, ni se
+eluden DRM, suscripciones, credenciales o geobloqueos. Las fuentes con redirección
+deben registrarse con su URL final. Tamaño máximo por lista: 4 MB.
