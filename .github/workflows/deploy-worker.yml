@@ -52,15 +52,20 @@ jobs:
           SPORTAPI_API_KEY: ${{ secrets.SPORTAPI_API_KEY }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
 
-      - name: Verificar proveedor, partidos y sala pública
+      - name: Verificar proveedor, partidos, sala pública y OAuth
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
         run: |
           set -Eeuo pipefail
           BASE="https://deporte-total-360-api.damian970609.workers.dev"
           HEALTH="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/health")"
           CHAT="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/chat/messages")"
-          node - "$HEALTH" "$CHAT" <<'NODE'
+          OAUTH="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/channels/auth-config")"
+          node - "$HEALTH" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" <<'NODE'
           const health = JSON.parse(process.argv[2]);
           const chat = JSON.parse(process.argv[3]);
+          const oauth = JSON.parse(process.argv[4]);
+          const expectedOAuthClientId = process.argv[5];
           if (health.status !== "online") {
             throw new Error("El endpoint /health no confirmó que el Worker está online.");
           }
@@ -70,10 +75,16 @@ jobs:
           if (health.sportsapi_configured !== true) {
             throw new Error("El Worker está online, pero SPORTAPI_API_KEY no está configurada.");
           }
+          if (health.channels_google_login_configured !== true) {
+            throw new Error("Falta GOOGLE_OAUTH_CLIENT_ID en Cloudflare.");
+          }
+          if (oauth.configured !== true || oauth.clientId !== expectedOAuthClientId) {
+            throw new Error("El cliente OAuth Web desplegado en Cloudflare no coincide con el secreto del repositorio.");
+          }
           if (!Array.isArray(chat.messages)) {
             throw new Error("La sala pública no devolvió una lista de mensajes.");
           }
-          console.log("Worker online; proveedor configurado; sala pública accesible; mensajes:", chat.messages.length);
+          console.log("Worker online; proveedor y OAuth configurados; sala pública accesible; mensajes:", chat.messages.length);
           NODE
 
           CATALOG="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/sports")"
