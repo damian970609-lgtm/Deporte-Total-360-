@@ -538,6 +538,28 @@ test("catálogo de canales devuelve un estado explícito cuando el Durable Objec
   assert.equal(body.error.code, "channel_catalog_not_configured");
 });
 
+test("la configuración OAuth pública confirma el cliente Web configurado sin emitir tokens", async () => {
+  const clientId = "dt360-web-client.apps.googleusercontent.com";
+  const response = await worker.fetch(
+    request("/api/channels/auth-config"),
+    { GOOGLE_OAUTH_CLIENT_ID: clientId }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.configured, true);
+  assert.equal(body.clientId, clientId);
+  assert.equal(Object.hasOwn(body, "token"), false);
+});
+
+test("la configuración OAuth pública falla de forma explícita si falta el cliente Web", async () => {
+  const response = await worker.fetch(request("/api/channels/auth-config"), {});
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.configured, false);
+  assert.equal(body.error.code, "google_oauth_not_configured");
+});
 test("el panel de canales exige configurar OAuth antes de aceptar administración", async () => {
   const response = await worker.fetch(request("/api/channels/admin/catalog"), {});
   const body = await response.json();
