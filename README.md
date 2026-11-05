@@ -173,6 +173,6 @@ Android con el package name y SHA-1 del certificado de firma de la APK.
 Las listas añadidas empiezan ocultas. El nombre/grupo se utiliza para sugerir
 la categoría deportiva; el administrador debe confirmar que puede distribuir
 cada señal antes de publicarla. Solo se aceptan listas M3U HTTPS y flujos
-HTTPS directos HLS (.m3u8) o MP4. No se extraen reproductores web, ni se
+HTTPS directos HLS (.m3u8), MP4 o MPEG-TS (.ts). No se extraen reproductores web, ni se
 eluden DRM, suscripciones, credenciales o geobloqueos. Las fuentes con redirección
 deben registrarse con su URL final. Tamaño máximo por lista: 4 MB.

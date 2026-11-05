@@ -42,7 +42,7 @@ function validStreamUrl(value, baseUrl) {
     const url = new URL(String(value || "").trim(), baseUrl);
     const path = url.pathname.toLowerCase();
     return url.protocol === "https:" && !url.username && !url.password &&
-      (path.endsWith(".m3u8") || path.endsWith(".mp4"));
+      (path.endsWith(".m3u8") || path.endsWith(".mp4") || path.endsWith(".ts"));
   } catch {
     return false;
   }
