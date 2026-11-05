@@ -332,9 +332,23 @@ export class ChannelCatalogRoom {
       "language TEXT NOT NULL DEFAULT 'unknown', visible INTEGER NOT NULL DEFAULT 0, " +
       "source_url TEXT NOT NULL, updated_at TEXT NOT NULL)"
     );
-    const channelColumns = Array.from(this.sql.exec("PRAGMA table_info(channels)"));
-    if (!channelColumns.some(column => column.name === "language")) {
-      this.sql.exec("ALTER TABLE channels ADD COLUMN language TEXT NOT NULL DEFAULT 'unknown'");
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS channel_catalog_schema_migrations (" +
+      "version INTEGER PRIMARY KEY)"
+    );
+    const languageMigration = Array.from(this.sql.exec(
+      "SELECT version FROM channel_catalog_schema_migrations WHERE version = 1"
+    ));
+    if (languageMigration.length === 0) {
+      try {
+        this.sql.exec("ALTER TABLE channels ADD COLUMN language TEXT NOT NULL DEFAULT 'unknown'");
+      } catch (error) {
+        const message = String(error && error.message || error).toLowerCase();
+        if (!message.includes("duplicate column name")) throw error;
+      }
+      this.sql.exec(
+        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (1)"
+      );
     }
     this.sql.exec("CREATE INDEX IF NOT EXISTS idx_channels_sports_visible ON channels(is_sports, visible, name)");
     this.sql.exec(
