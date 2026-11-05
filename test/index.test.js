@@ -1,6 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
+import { detectChannelLanguage } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -547,4 +548,16 @@ test("el panel de canales exige configurar OAuth antes de aceptar administració
 test("las rutas de canales rechazan métodos que no están autorizados", async () => {
   const response = await worker.fetch(request("/api/channels", "POST"), {});
   assert.equal(response.status, 404);
+});
+
+
+test("detecta español e inglés desde metadatos explícitos de M3U", () => {
+  assert.equal(detectChannelLanguage("es-MX", "ESPN 2", "Sports"), "es");
+  assert.equal(detectChannelLanguage("English", "ESPN", "Sports"), "en");
+});
+
+test("detecta idioma por etiquetas del canal y deja desconocidos sin bandera", () => {
+  assert.equal(detectChannelLanguage("", "Liga Española", "Deportes"), "es");
+  assert.equal(detectChannelLanguage("", "Sports Network English", "Sports"), "en");
+  assert.equal(detectChannelLanguage("", "ESPN 2", "Sports"), "unknown");
 });
