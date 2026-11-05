@@ -228,7 +228,11 @@ export async function handleChannelRoutes(request, env, path) {
       0,
       Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0)
     );
-    return callCatalog(env, "/catalog?scope=public&offset=" + offset);
+    const search = cleanText(incoming.searchParams.get("q") || "", 100);
+    return callCatalog(
+      env,
+      "/catalog?scope=public&q=" + encodeURIComponent(search) + "&offset=" + offset
+    );
   }
 
   if (path === "/api/channels/favorites") {
