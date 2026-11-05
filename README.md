@@ -176,3 +176,16 @@ cada señal antes de publicarla. Solo se aceptan listas M3U HTTPS y flujos
 HTTPS directos HLS (.m3u8), MP4 o MPEG-TS (.ts). No se extraen reproductores web, ni se
 eluden DRM, suscripciones, credenciales o geobloqueos. Las fuentes con redirección
 deben registrarse con su URL final. Tamaño máximo por lista: 4 MB.
+
+
+## Idioma de cada canal
+
+El importador lee los metadatos `tvg-language`, `language` o `lang` de
+cada entrada M3U y también reconoce etiquetas explícitas como Español/Latino o
+English. Cuando la fuente no identifica el idioma, el panel privado permite
+elegir Español 🇪🇸, Inglés 🇺🇸 o Sin definir antes de publicar. La selección se
+guarda en el catálogo global y se conserva durante las actualizaciones de la
+lista, salvo que una importación traiga un idioma explícito nuevo.
+
+Ruta de administración: `PATCH /api/channels/admin/channels/{id}/language`.
+Valores admitidos: `es`, `en` y `unknown`.
