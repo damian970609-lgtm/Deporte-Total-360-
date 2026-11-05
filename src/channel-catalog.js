@@ -377,8 +377,11 @@ export class ChannelCatalogRoom {
     }
 
     if (path === "/refresh" && request.method === "POST") {
-      const result = await this.refreshBatch();
-      return response({ ...result, message: "Actualización de fuentes programada." }, 202);
+      await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({
+        queued: true,
+        message: "La actualización se ejecutará en segundo plano por lotes."
+      }, 202);
     }
 
     const visibility = path.match(/^\/visibility\/([a-zA-Z0-9_-]{1,100})$/);
