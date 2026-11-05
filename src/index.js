@@ -1,7 +1,9 @@
+import { ChannelCatalogRoom, handleChannelRoutes } from "./channel-catalog.js";
+
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "X-Content-Type-Options": "nosniff"
 };
@@ -1186,7 +1188,15 @@ async function sportsApiProxy(request,env,route) {
   } catch { return json({error:{code:"upstream_unavailable",message:"No se pudo conectar con SportsAPI."}},503,{"Retry-After":"30"}); }
 }
 
+export { ChannelCatalogRoom };
+
 export default {
+  async scheduled(controller, env, ctx) {
+    if (!env.CHANNEL_CATALOG) return;
+    const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
+    const stub = env.CHANNEL_CATALOG.get(id);
+    ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/refresh", { method: "POST" })));
+  },
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
       return empty(204);
@@ -1211,6 +1221,10 @@ export default {
       const room = env.PUBLIC_CHAT_ROOM.get(roomId);
       const target = new URL("https://public-chat.internal/messages");
       return room.fetch(new Request(target.toString(), request));
+    }
+
+    if (path.startsWith("/api/channels")) {
+      return handleChannelRoutes(request, env, path);
     }
 
     if (request.method !== "GET") {
@@ -1242,7 +1256,9 @@ export default {
         sportsapi_configured: Boolean(env.SPORTAPI_API_KEY || env.SPORTSAPI_API_KEY),
         sportsapi_favorite_sports: FAVORITE_SPORTS.length,
         sports: Object.keys(SPORTS).length,
-        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON)
+        live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON),
+        channels_catalog_configured: Boolean(env.CHANNEL_CATALOG),
+        channels_google_login_configured: Boolean(env.GOOGLE_OAUTH_CLIENT_ID)
       });
     }
 

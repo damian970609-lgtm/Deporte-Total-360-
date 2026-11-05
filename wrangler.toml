@@ -14,3 +14,17 @@ class_name = "PublicChatRoom"
 [[migrations]]
 tag = "v1-public-chat"
 new_sqlite_classes = ["PublicChatRoom"]
+
+[[durable_objects.bindings]]
+name = "CHANNEL_CATALOG"
+class_name = "ChannelCatalogRoom"
+
+[[migrations]]
+tag = "v2-channel-catalog"
+new_sqlite_classes = ["ChannelCatalogRoom"]
+
+[triggers]
+crons = ["0 */6 * * *"]
+
+[vars]
+CHANNELS_ADMIN_EMAIL = "damian970609@gmail.com"
