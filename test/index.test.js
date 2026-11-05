@@ -561,3 +561,41 @@ test("detecta idioma por etiquetas del canal y deja desconocidos sin bandera", (
   assert.equal(detectChannelLanguage("", "Sports Network English", "Sports"), "en");
   assert.equal(detectChannelLanguage("", "ESPN 2", "Sports"), "unknown");
 });
+
+test("el catálogo público reenvía el offset de paginación al Durable Object", async () => {
+  let capturedUrl;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return {
+          async fetch(internalRequest) {
+            capturedUrl = new URL(internalRequest.url);
+            return new Response(JSON.stringify({
+              configured: true,
+              channels: [],
+              offset: 200,
+              hasMore: false
+            }), {
+              status: 200,
+              headers: { "Content-Type": "application/json; charset=utf-8" }
+            });
+          }
+        };
+      }
+    }
+  };
+
+  const response = await worker.fetch(request("/api/channels?offset=200"), env);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(capturedUrl.pathname, "/catalog");
+  assert.equal(capturedUrl.searchParams.get("scope"), "public");
+  assert.equal(capturedUrl.searchParams.get("offset"), "200");
+  assert.equal(body.offset, 200);
+});
+
