@@ -383,6 +383,40 @@ export class ChannelCatalogRoom {
       "user_sub TEXT NOT NULL, channel_id TEXT NOT NULL, created_at TEXT NOT NULL, " +
       "PRIMARY KEY(user_sub, channel_id))"
     );
+
+    // Migración idempotente: registra una lista deportiva pública por defecto
+    // una sola vez y la coloca primero en la cola de importación.
+    this.state.blockConcurrencyWhile(async () => {
+      const defaultSourceVersion = Array.from(this.sql.exec(
+        "SELECT version FROM channel_catalog_schema_migrations WHERE version = 2"
+      ));
+      if (defaultSourceVersion.length === 0) {
+        const defaultSportsPlaylistUrl =
+          "https://iptv-org.github.io/iptv/categories/sports.m3u";
+        const defaultSource = Array.from(this.sql.exec(
+          "SELECT id FROM sources WHERE url = ?",
+          defaultSportsPlaylistUrl
+        ))[0];
+        if (defaultSource) {
+          this.sql.exec(
+            "UPDATE sources SET label = ?, status = 'queued', last_error = '', next_refresh_at = 0 WHERE id = ?",
+            "00 · IPTV-org Sports (pública)",
+            defaultSource.id
+          );
+        } else {
+          this.sql.exec(
+            "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0)",
+            "iptv-org-sports-default",
+            defaultSportsPlaylistUrl,
+            "00 · IPTV-org Sports (pública)"
+          );
+        }
+        this.sql.exec(
+          "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (2)"
+        );
+        await this.state.storage.setAlarm(Date.now() + 1000);
+      }
+    });
   }
 
   async fetch(request) {
