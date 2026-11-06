@@ -59,9 +59,9 @@ jobs:
             tmp="$(mktemp)"
             status="$(curl --silent --show-error --retry 1 --retry-delay 2 --max-time 20 -o "$tmp" -w '%{http_code}' "$BASE$route")"
             if [[ "$status" != "200" ]]; then
-              echo "::error::La ruta $route respondió HTTP $status."
-              echo "Respuesta del Worker:"
-              sed -n '1,40p' "$tmp"
+              echo "::error::La ruta $route respondió HTTP $status." >&2
+              echo "Respuesta del Worker:" >&2
+              sed -n '1,40p' "$tmp" >&2
               rm -f "$tmp"
               return 1
             fi
