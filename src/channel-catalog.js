@@ -164,7 +164,7 @@ async function fetchPublicPlaylist(sourceUrl) {
 
 async function readTextLimited(sourceResponse) {
   const declared = Number(sourceResponse.headers.get("Content-Length") || 0);
-  if (declared > MAX_PLAYLIST_BYTES) throw new Error("La lista supera el límite de 4 MB.");
+  if (declared > MAX_PLAYLIST_BYTES) throw new Error("La lista supera el límite de 12 MB.");
   if (!sourceResponse.body) return "";
   const reader = sourceResponse.body.getReader();
   const chunks = [];
