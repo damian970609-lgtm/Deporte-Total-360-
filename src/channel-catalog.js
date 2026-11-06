@@ -466,10 +466,14 @@ export async function handleChannelRoutes(request, env, path) {
       0,
       Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0)
     );
+    const limit = Math.max(
+      1,
+      Math.min(2000, Number(incoming.searchParams.get("limit") || 200) || 200)
+    );
     const search = cleanText(incoming.searchParams.get("q") || "", 100);
     return callCatalog(
       env,
-      "/catalog?scope=public&q=" + encodeURIComponent(search) + "&offset=" + offset
+      "/catalog?scope=public&q=" + encodeURIComponent(search) + "&offset=" + offset + "&limit=" + limit
     );
   }
 
@@ -794,6 +798,7 @@ export class ChannelCatalogRoom {
       const admin = url.searchParams.get("scope") === "admin";
       const search = cleanText(url.searchParams.get("q") || "", 100);
       const offset = Math.max(0, Math.min(100000, Number(url.searchParams.get("offset") || 0) || 0));
+      const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get("limit") || 200) || 200));
       const where = admin ? "1=1" : "visible = 1 AND is_sports = 1";
       const filter = search ? " AND (lower(name) LIKE ? OR lower(group_title) LIKE ?)" : "";
       const params = search ? ["%" + search.toLowerCase() + "%", "%" + search.toLowerCase() + "%"] : [];
@@ -805,8 +810,8 @@ export class ChannelCatalogRoom {
       const rows = Array.from(this.sql.exec(
         "SELECT id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible " +
         "FROM channels WHERE " + where + filter +
-        " ORDER BY name COLLATE NOCASE LIMIT 200 OFFSET ?",
-        ...params, offset
+        " ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
+        ...params, limit, offset
       ));
       return response({
         configured: true,

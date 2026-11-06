@@ -584,7 +584,7 @@ test("detecta idioma por etiquetas del canal y deja desconocidos sin bandera", (
   assert.equal(detectChannelLanguage("", "ESPN 2", "Sports"), "unknown");
 });
 
-test("el catálogo público reenvía búsqueda y offset al Durable Object", async () => {
+test("el catálogo público reenvía búsqueda, offset y tamaño de página", async () => {
   let capturedUrl;
   const env = {
     CHANNEL_CATALOG: {
@@ -612,7 +612,7 @@ test("el catálogo público reenvía búsqueda y offset al Durable Object", asyn
   };
 
   const response = await worker.fetch(
-    request("/api/channels?offset=200&q=ESPN"), env
+    request("/api/channels?offset=200&q=ESPN&limit=1500"), env
   );
   const body = await response.json();
 
@@ -620,6 +620,7 @@ test("el catálogo público reenvía búsqueda y offset al Durable Object", asyn
   assert.equal(capturedUrl.pathname, "/catalog");
   assert.equal(capturedUrl.searchParams.get("scope"), "public");
   assert.equal(capturedUrl.searchParams.get("offset"), "200");
+  assert.equal(capturedUrl.searchParams.get("limit"), "1500");
   assert.equal(capturedUrl.searchParams.get("q"), "ESPN");
   assert.equal(body.offset, 200);
 });
