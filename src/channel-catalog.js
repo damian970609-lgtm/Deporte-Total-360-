@@ -144,7 +144,7 @@ function decodeXmlEntities(value) {
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&#(\\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
 }
 
@@ -170,9 +170,9 @@ function channelFromPlaylistEntry(nameValue, urlValue, sourceUrl, groupTitle = "
 
 function parsePls(text, sourceUrl) {
   const entries = new Map();
-  for (const rawLine of text.split(/\\r?\\n/)) {
+  for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
-    const match = line.match(/^(File|Title)(\\d+)\\s*=\\s*(.*)$/i);
+    const match = line.match(/^(File|Title)(\d+)\s*=\s*(.*)$/i);
     if (!match) continue;
     const id = Number(match[2]);
     if (!Number.isInteger(id) || id < 1) continue;
@@ -192,12 +192,12 @@ function parsePls(text, sourceUrl) {
 
 function parseXspf(text, sourceUrl) {
   const channels = [];
-  for (const trackMatch of text.matchAll(/<track\\b[^>]*>([\\s\\S]*?)<\\/track>/gi)) {
+  for (const trackMatch of text.matchAll(/<track\b[^>]*>([\s\S]*?)<\/track>/gi)) {
     const track = trackMatch[1];
-    const location = track.match(/<location\\b[^>]*>([\\s\\S]*?)<\\/location>/i);
+    const location = track.match(/<location\b[^>]*>([\s\S]*?)<\/location>/i);
     if (!location) continue;
-    const title = track.match(/<title\\b[^>]*>([\\s\\S]*?)<\\/title>/i);
-    const logo = track.match(/<(?:image|annotation)\\b[^>]*>([\\s\\S]*?)<\\/(?:image|annotation)>/i);
+    const title = track.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+    const logo = track.match(/<(?:image|annotation)\b[^>]*>([\s\S]*?)<\/(?:image|annotation)>/i);
     const channel = channelFromPlaylistEntry(
       title ? decodeXmlEntities(title[1].trim()) : "",
       decodeXmlEntities(location[1].trim()),
@@ -258,7 +258,7 @@ function parseJsonPlaylist(text, sourceUrl) {
 
 function parsePlainTextPlaylist(text, sourceUrl) {
   const channels = [];
-  for (const rawLine of text.split(/\\r?\\n/)) {
+  for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#") || line.startsWith(";") || line.startsWith("//")) continue;
     let name = "";
@@ -267,16 +267,16 @@ function parsePlainTextPlaylist(text, sourceUrl) {
     if (pipe > 0) {
       const left = line.slice(0, pipe).trim();
       const right = line.slice(pipe + 1).trim();
-      if (/^https?:\\/\\//i.test(right)) {
+      if (/^https?:\/\//i.test(right)) {
         name = left;
         url = right;
-      } else if (/^https?:\\/\\//i.test(left)) {
+      } else if (/^https?:\/\//i.test(left)) {
         url = left;
         name = right;
       }
     } else {
       const comma = line.indexOf(",");
-      if (comma > 0 && /^https?:\\/\\//i.test(line.slice(comma + 1).trim())) {
+      if (comma > 0 && /^https?:\/\//i.test(line.slice(comma + 1).trim())) {
         name = line.slice(0, comma).trim();
         url = line.slice(comma + 1).trim();
       }
@@ -293,15 +293,15 @@ function parsePlainTextPlaylist(text, sourceUrl) {
  * señal se validan aparte para no enviar archivos de listas al reproductor.
  */
 export function parsePlaylist(text, sourceUrl) {
-  const normalized = String(text || "").replace(/^\\uFEFF/, "").trim();
+  const normalized = String(text || "").replace(/^\uFEFF/, "").trim();
   if (!normalized) return { format: "unknown", channels: [] };
   if (normalized.startsWith("#EXTM3U")) {
     return { format: "m3u", channels: parseM3u(normalized, sourceUrl) };
   }
-  if (/^\\[playlist\\]/i.test(normalized)) {
+  if (/^\[playlist\]/i.test(normalized)) {
     return { format: "pls", channels: parsePls(normalized, sourceUrl) };
   }
-  if (/^<\\?xml|^<playlist\\b/i.test(normalized)) {
+  if (/^<\?xml|^<(?:(?:[a-z0-9_-]+):)?playlist\b/i.test(normalized)) {
     return { format: "xspf", channels: parseXspf(normalized, sourceUrl) };
   }
   if (normalized.startsWith("{") || normalized.startsWith("[")) {
