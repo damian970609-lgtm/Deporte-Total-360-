@@ -333,6 +333,41 @@ export function isChannelSuppressed(sql, streamUrl) {
   )).length > 0;
 }
 
+// Synchronize favorites without clearing the current list first. This matters
+// on the Workers Free quota: if an insert hits the daily write limit, previous
+// favorites remain intact rather than being deleted by a partially completed PUT.
+export function syncFavoriteRows(sql, userSub, channelIds, timestamp = new Date().toISOString()) {
+  const currentRows = Array.from(sql.exec(
+    "SELECT channel_id FROM favorites WHERE user_sub = ?",
+    userSub
+  ));
+  const current = new Set(currentRows.map(row => String(row.channel_id)));
+  const desired = new Set(channelIds);
+  let added = 0;
+  let removed = 0;
+
+  for (const channelId of desired) {
+    if (current.has(channelId)) continue;
+    sql.exec(
+      "INSERT OR IGNORE INTO favorites (user_sub, channel_id, created_at) " +
+      "SELECT ?, id, ? FROM channels WHERE id = ? AND visible = 1 AND is_sports = 1",
+      userSub, timestamp, channelId
+    );
+    added += 1;
+  }
+
+  // Delete only after every new favorite has been inserted successfully.
+  for (const channelId of current) {
+    if (desired.has(channelId)) continue;
+    sql.exec(
+      "DELETE FROM favorites WHERE user_sub = ? AND channel_id = ?",
+      userSub, channelId
+    );
+    removed += 1;
+  }
+  return { added, removed, count: desired.size };
+}
+
 async function fetchPublicPlaylist(sourceUrl) {
   let currentUrl = sourceUrl;
   for (let redirects = 0; redirects <= 5; redirects++) {
@@ -1063,9 +1098,10 @@ export class ChannelCatalogRoom {
     if (path === "/favorites" && request.method === "GET") {
       const userSub = request.headers.get("X-Channel-User-Sub") || "";
       if (!userSub) return response({ error: "Identidad no disponible." }, 401);
+      // Hidden channels remain favorites. Explicit channel deletion removes the
+      // favorite row, so visibility must not silently erase saved user choices.
       const rows = Array.from(this.sql.exec(
-        "SELECT f.channel_id FROM favorites f INNER JOIN channels c ON c.id = f.channel_id " +
-        "WHERE f.user_sub = ? AND c.visible = 1 AND c.is_sports = 1",
+        "SELECT channel_id FROM favorites WHERE user_sub = ? ORDER BY created_at ASC",
         userSub
       ));
       return response({ channelIds: rows.map(row => row.channel_id) });
@@ -1079,17 +1115,17 @@ export class ChannelCatalogRoom {
         return response({ error: "JSON inválido." }, 400);
       }
       const ids = Array.isArray(payload && payload.channelIds)
-        ? Array.from(new Set(payload.channelIds.filter(id => typeof id === "string").slice(0, 2000)))
+        ? Array.from(new Set(payload.channelIds.filter(id =>
+            typeof id === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(id)
+          ).slice(0, 2000)))
         : [];
-      this.sql.exec("DELETE FROM favorites WHERE user_sub = ?", userSub);
-      for (const channelId of ids) {
-        this.sql.exec(
-          "INSERT OR IGNORE INTO favorites (user_sub, channel_id, created_at) " +
-          "SELECT ?, id, ? FROM channels WHERE id = ? AND visible = 1 AND is_sports = 1",
-          userSub, new Date().toISOString(), channelId
-        );
-      }
-      return response({ saved: true, count: ids.length });
+      const synced = syncFavoriteRows(this.sql, userSub, ids);
+      return response({
+        saved: true,
+        count: synced.count,
+        added: synced.added,
+        removed: synced.removed
+      });
     }
 
     return response({ error: "Ruta interna no encontrada." }, 404);
