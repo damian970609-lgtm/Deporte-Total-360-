@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, isChannelSuppressed, parsePlaylist, selectSportsChannels, syncFavoriteRows } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, isChannelSuppressed, parsePlaylist, registerPlaylistSource, selectSportsChannels, syncFavoriteRows } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -1070,4 +1070,59 @@ test("sincronizar favoritos añade antes de borrar y conserva los anteriores si 
   assert.deepEqual(Array.from(initial).sort(), ["keep-me", "new-one"]);
   assert.equal(result.added, 1);
   assert.equal(result.removed, 1);
+});
+
+test("registrar una URL de lista existente no la vuelve a poner en cola", () => {
+  const existing = {
+    id: "source-1",
+    url: "https://lists.example/sports.m3u",
+    label: "Deportes",
+    status: "imported",
+    imported_count: 125,
+    last_imported_at: "2026-11-06T00:00:00.000Z"
+  };
+  const writes = [];
+  const sql = {
+    exec(statement, ...args) {
+      if (statement.startsWith("SELECT id, label, status, imported_count")) {
+        return existing.url === args[0] ? [existing] : [];
+      }
+      writes.push({statement,args});
+      if (statement.startsWith("UPDATE sources SET label")) existing.label = args[0];
+      return [];
+    }
+  };
+
+  const duplicate = registerPlaylistSource(
+    sql, existing.url, "Deportes", () => "must-not-be-used"
+  );
+  assert.equal(duplicate.created, false);
+  assert.equal(duplicate.status, "imported");
+  assert.equal(duplicate.importedCount, 125);
+  assert.equal(writes.length, 0);
+
+  const renamed = registerPlaylistSource(sql, existing.url, "Fútbol y deportes");
+  assert.equal(renamed.created, false);
+  assert.equal(existing.label, "Fútbol y deportes");
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].statement, /^UPDATE sources SET label/);
+});
+
+test("registrar una nueva lista crea una única fuente en cola", () => {
+  const writes = [];
+  const sql = {
+    exec(statement, ...args) {
+      if (statement.startsWith("SELECT id, label, status, imported_count")) return [];
+      writes.push({statement,args});
+      return [];
+    }
+  };
+  const created = registerPlaylistSource(
+    sql, "https://lists.example/new.m3u", "Nueva lista", () => "source-new"
+  );
+  assert.equal(created.created, true);
+  assert.equal(created.status, "queued");
+  assert.equal(created.id, "source-new");
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].statement, /^INSERT INTO sources/);
 });
