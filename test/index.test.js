@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, isChannelSuppressed, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -897,4 +897,96 @@ test("solo selecciona canales deportivos y limita importación por fuente a 1000
   assert.equal(selected.length, 1000);
   assert.equal(selected[0].name, "Sports Channel 0");
   assert.equal(selected.every(channel => channel.isSports === 1), true);
+});
+
+
+test("el borrado individual se autoriza con Google y se reenvía al catálogo", async () => {
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  const env = {
+    GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+    CHANNELS_ADMIN_EMAIL: "admin@example.com",
+    CHANNEL_CATALOG: {
+      idFromName: () => "catalog",
+      get: () => ({
+        async fetch(internalRequest) {
+          forwarded.push({
+            method: internalRequest.method,
+            path: new URL(internalRequest.url).pathname
+          });
+          return new Response(JSON.stringify({
+            deleted: true,
+            blockedFromReimport: true
+          }), { status: 200 });
+        }
+      })
+    }
+  };
+  const deletion = new Request(
+    "https://worker.example/api/channels/admin/channels/channel-123",
+    { method: "DELETE", headers: { Authorization: "Bearer signed-google-id-token" } }
+  );
+  const response = await handleChannelRoutes(
+    deletion, env, new URL(deletion.url).pathname
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(forwarded, [
+    { method: "DELETE", path: "/channels/channel-123" }
+  ]);
+});
+
+test("la eliminación individual no está disponible para otra cuenta Google", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    aud: "test-web-client",
+    iss: "https://accounts.google.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "viewer@example.com",
+    email_verified: true,
+    sub: "viewer-google-sub"
+  }), { status: 200 });
+  let forwarded = false;
+  const deletion = new Request(
+    "https://worker.example/api/channels/admin/channels/channel-123",
+    { method: "DELETE", headers: { Authorization: "Bearer viewer-id-token" } }
+  );
+  const response = await handleChannelRoutes(deletion, {
+    GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+    CHANNELS_ADMIN_EMAIL: "admin@example.com",
+    CHANNEL_CATALOG: {
+      idFromName: () => "catalog",
+      get: () => ({
+        async fetch() {
+          forwarded = true;
+          return new Response("{}", { status: 200 });
+        }
+      })
+    }
+  }, new URL(deletion.url).pathname);
+  assert.equal(response.status, 403);
+  assert.equal(forwarded, false);
+});
+
+test("el bloqueo persistente usa la URL para impedir reimportar un canal eliminado", () => {
+  const blockedUrl = "https://media.example/channel.m3u8";
+  const queried = [];
+  const sql = {
+    exec(statement, url) {
+      queried.push({ statement, url });
+      return url === blockedUrl ? [{ stream_url: url }] : [];
+    }
+  };
+  assert.equal(isChannelSuppressed(sql, blockedUrl), true);
+  assert.equal(isChannelSuppressed(sql, "https://media.example/other.m3u8"), false);
+  assert.match(queried[0].statement, /blocked_channels WHERE stream_url = \?/);
 });

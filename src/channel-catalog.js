@@ -1,6 +1,6 @@
 const JSON_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "Cache-Control": "no-store",
@@ -322,6 +322,17 @@ export function selectSportsChannels(channels) {
     .slice(0, MAX_IMPORTED_CHANNELS);
 }
 
+// A deleted channel is blocked by its exact stream URL, not only by its current
+// display name or generated ID. This prevents later playlist refreshes from
+// silently recreating the same signal under a renamed entry.
+export function isChannelSuppressed(sql, streamUrl) {
+  if (typeof streamUrl !== "string" || !streamUrl.trim()) return false;
+  return Array.from(sql.exec(
+    "SELECT stream_url FROM blocked_channels WHERE stream_url = ?",
+    streamUrl.trim()
+  )).length > 0;
+}
+
 async function fetchPublicPlaylist(sourceUrl) {
   let currentUrl = sourceUrl;
   for (let redirects = 0; redirects <= 5; redirects++) {
@@ -598,6 +609,11 @@ export async function handleChannelRoutes(request, env, path) {
     return callCatalog(env, "/sources/" + encodeURIComponent(sourceRemoval[1]), "DELETE");
   }
 
+  const channelRemoval = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+  if (channelRemoval && method === "DELETE") {
+    return callCatalog(env, "/channels/" + encodeURIComponent(channelRemoval[1]), "DELETE");
+  }
+
   if (path === "/api/channels/admin/refresh" && method === "POST") {
     return callCatalog(env, "/refresh", "POST", {});
   }
@@ -695,6 +711,11 @@ export class ChannelCatalogRoom {
       "CREATE TABLE IF NOT EXISTS favorites (" +
       "user_sub TEXT NOT NULL, channel_id TEXT NOT NULL, created_at TEXT NOT NULL, " +
       "PRIMARY KEY(user_sub, channel_id))"
+    );
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS blocked_channels (" +
+      "stream_url TEXT PRIMARY KEY, channel_id TEXT NOT NULL, " +
+      "name TEXT NOT NULL, created_at TEXT NOT NULL)"
     );
 
     this.sql.exec(
@@ -965,6 +986,26 @@ export class ChannelCatalogRoom {
       });
     }
 
+    const channelRemoval = path.match(/^\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+    if (channelRemoval && request.method === "DELETE") {
+      const channelId = channelRemoval[1];
+      const existing = Array.from(this.sql.exec(
+        "SELECT id, stream_url, name FROM channels WHERE id = ?",
+        channelId
+      ))[0];
+      if (!existing) return response({ error: "Canal no encontrado." }, 404);
+      const timestamp = new Date().toISOString();
+      this.sql.exec(
+        "INSERT INTO blocked_channels (stream_url, channel_id, name, created_at) " +
+        "VALUES (?, ?, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
+        "channel_id = excluded.channel_id, name = excluded.name, created_at = excluded.created_at",
+        existing.stream_url, existing.id, existing.name, timestamp
+      );
+      this.sql.exec("DELETE FROM favorites WHERE channel_id = ?", channelId);
+      this.sql.exec("DELETE FROM channels WHERE id = ?", channelId);
+      return response({ deleted: true, id: channelId, blockedFromReimport: true });
+    }
+
     if (path === "/refresh" && request.method === "POST") {
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({
@@ -1100,7 +1141,9 @@ export class ChannelCatalogRoom {
         ))[0];
         if (!stillRegistered) continue;
         const timestamp = new Date().toISOString();
+        let importedForSource = 0;
         for (const channel of parsed) {
+          if (isChannelSuppressed(this.sql, channel.url)) continue;
           const identifier = await identifierFor(channel.name, channel.url);
           this.sql.exec(
             "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
@@ -1116,15 +1159,16 @@ export class ChannelCatalogRoom {
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
             channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
           );
+          importedForSource += 1;
         }
-        imported += parsed.length;
+        imported += importedForSource;
         this.sql.exec(
           "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
-          parsedPlaylist.format, timestamp, parsed.length, Date.now() + REFRESH_INTERVAL_MS, source.id
+          parsedPlaylist.format, timestamp, importedForSource, Date.now() + REFRESH_INTERVAL_MS, source.id
         );
         results.push({
           label: source.label,
-          imported: parsed.length,
+          imported: importedForSource,
           format: parsedPlaylist.format,
           status: "ok"
         });

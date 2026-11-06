@@ -151,8 +151,8 @@ de publicar el canal.
 
 El catálogo, las listas fuente y los favoritos se guardan en un Durable Object
 SQLite de Cloudflare. La importación se procesa en lotes pequeños y continúa
-aunque la aplicación esté cerrada o desinstalada. Un Cron Trigger vuelve a
-consultar las fuentes cada seis horas.
+aunque la aplicación esté cerrada o desinstalada. Un Cron Trigger despierta el proceso cada seis horas; cada fuente se vuelve a
+importar como máximo una vez al día, salvo que el administrador fuerce una actualización.
 
 Rutas:
 - `GET /api/channels`: catálogo público visible.
@@ -161,6 +161,7 @@ Rutas:
 - `GET/POST /api/channels/admin/sources`: ver y registrar listas M3U.
 - `POST /api/channels/admin/refresh`: iniciar importación/actualización.
 - `PATCH /api/channels/admin/channels/{id}/visibility`: publicar u ocultar.
+- `DELETE /api/channels/admin/channels/{id}`: eliminar un canal y bloquear su URL para que las importaciones futuras no lo vuelvan a crear.
 
 La API verifica un ID token de Google, su audiencia `GOOGLE_OAUTH_CLIENT_ID`,
 emisor, caducidad y correo verificado. Solo el correo indicado en
@@ -172,10 +173,17 @@ Android con el package name y SHA-1 del certificado de firma de la APK.
 
 Las listas añadidas empiezan ocultas. El nombre/grupo se utiliza para sugerir
 la categoría deportiva; el administrador debe confirmar que puede distribuir
-cada señal antes de publicarla. Solo se aceptan listas M3U HTTPS y flujos
-HTTPS directos HLS (.m3u8), MP4 o MPEG-TS (.ts). No se extraen reproductores web, ni se
-eluden DRM, suscripciones, credenciales o geobloqueos. Las fuentes con redirección
-deben registrarse con su URL final. Tamaño máximo por lista: 4 MB.
+cada señal antes de publicarla. Se aceptan listas M3U, PLS, XSPF/XML, JSON y TXT mediante HTTPS, además de
+señales directas HTTPS HLS (.m3u8), DASH (.mpd), Smooth Streaming y vídeo
+progresivo compatible (MP4, M4V, MOV, MKV, WebM, MPEG-TS, MPEG, MPG, FLV,
+M2TS y MTS). No se extraen reproductores web, ni se eluden DRM, suscripciones,
+credenciales o geobloqueos. Las fuentes con redirección deben registrarse con
+su URL final. Tamaño máximo por lista: 12 MB.
+
+Al eliminar un canal individual, el catálogo guarda su URL en una lista de
+bloqueo persistente, borra sus favoritos remotos y lo elimina del catálogo. Una
+actualización posterior de cualquiera de las listas no lo volverá a importar
+con esa misma URL.
 
 
 ## Idioma de cada canal
