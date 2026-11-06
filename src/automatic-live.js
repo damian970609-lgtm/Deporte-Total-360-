@@ -181,7 +181,7 @@ async function fetchTextCached(url, fetchImpl, ttlSeconds, maxBytes = MAX_EPG_BY
   return text;
 }
 
-async function fetchJsonCached(url, apiKey, fetchImpl, ttlSeconds = 240) {
+async function fetchJsonCached(url, apiKey, fetchImpl, ttlSeconds = 3600) {
   const request = new Request(url, { method: "GET" });
   const cache = globalThis.caches && globalThis.caches.default;
   if (cache) {
@@ -317,7 +317,7 @@ async function fetchProgrammes(fetchImpl) {
   for (let offset = 0; offset < EPG_URLS.length; offset += 3) {
     const batch = EPG_URLS.slice(offset, offset + 3);
     const bodies = await Promise.all(batch.map(url =>
-      fetchTextCached(url, fetchImpl, 900).catch(() => null)
+      fetchTextCached(url, fetchImpl, 1800).catch(() => null)
     ));
     for (const body of bodies) {
       if (!body) continue;
