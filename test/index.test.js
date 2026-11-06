@@ -624,3 +624,131 @@ test("el catálogo público reenvía búsqueda y offset al Durable Object", asyn
   assert.equal(body.offset, 200);
 });
 
+
+
+test("la licencia de la app se comprueba contra el catálogo usando el correo verificado", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    iss: "https://accounts.google.com",
+    aud: "dt360-client.apps.googleusercontent.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "comprador@example.com",
+    email_verified: "true",
+    sub: "google-user-123"
+  }), { status: 200 });
+
+  let captured;
+  const env = {
+    GOOGLE_OAUTH_CLIENT_ID: "dt360-client.apps.googleusercontent.com",
+    CHANNEL_CATALOG: {
+      idFromName: name => name,
+      get: () => ({
+        async fetch(internalRequest) {
+          captured = internalRequest;
+          return new Response(JSON.stringify({
+            allowed: true, status: "active", licenseType: "paid"
+          }), { status: 200 });
+        }
+      })
+    }
+  };
+  const response = await worker.fetch(new Request("https://worker.example/api/license", {
+    headers: { Authorization: "Bearer valid-test-token" }
+  }), env);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.allowed, true);
+  assert.equal(body.licenseType, "paid");
+  assert.equal(new URL(captured.url).pathname, "/licenses/check");
+  assert.equal(captured.headers.get("X-License-Email"), "comprador@example.com");
+});
+
+test("la cuenta administradora recibe acceso de propietario sin licencia comercial", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    iss: "accounts.google.com",
+    aud: "dt360-client.apps.googleusercontent.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "damian970609@gmail.com",
+    email_verified: true,
+    sub: "owner-google-sub"
+  }), { status: 200 });
+
+  const response = await worker.fetch(new Request("https://worker.example/api/license", {
+    headers: { Authorization: "Bearer owner-token" }
+  }), {
+    GOOGLE_OAUTH_CLIENT_ID: "dt360-client.apps.googleusercontent.com",
+    CHANNELS_ADMIN_EMAIL: "damian970609@gmail.com"
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.allowed, true);
+  assert.equal(body.licenseType, "owner");
+});
+
+test("solo el propietario puede conceder licencias de pago o gratuitas", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    iss: "https://accounts.google.com",
+    aud: "dt360-client.apps.googleusercontent.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "damian970609@gmail.com",
+    email_verified: "true",
+    sub: "owner-google-sub"
+  }), { status: 200 });
+
+  let captured;
+  const response = await worker.fetch(new Request("https://worker.example/api/channels/admin/licenses", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer owner-token",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      email: "buyer@example.com",
+      licenseType: "paid",
+      note: "Pago confirmado"
+    })
+  }), {
+    GOOGLE_OAUTH_CLIENT_ID: "dt360-client.apps.googleusercontent.com",
+    CHANNELS_ADMIN_EMAIL: "damian970609@gmail.com",
+    CHANNEL_CATALOG: {
+      idFromName: name => name,
+      get: () => ({
+        async fetch(internalRequest) {
+          captured = internalRequest;
+          return new Response(JSON.stringify({ saved: true }), { status: 200 });
+        }
+      })
+    }
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(new URL(captured.url).pathname, "/licenses");
+  assert.deepEqual(await captured.json(), {
+    email: "buyer@example.com",
+    licenseType: "paid",
+    note: "Pago confirmado",
+    grantedBy: "damian970609@gmail.com"
+  });
+});
+
+test("una cuenta no administradora no puede gestionar licencias", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    iss: "https://accounts.google.com",
+    aud: "dt360-client.apps.googleusercontent.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "buyer@example.com",
+    email_verified: "true",
+    sub: "buyer-google-sub"
+  }), { status: 200 });
+
+  const response = await worker.fetch(new Request("https://worker.example/api/channels/admin/licenses", {
+    method: "GET",
+    headers: { Authorization: "Bearer buyer-token" }
+  }), {
+    GOOGLE_OAUTH_CLIENT_ID: "dt360-client.apps.googleusercontent.com",
+    CHANNELS_ADMIN_EMAIL: "damian970609@gmail.com"
+  });
+
+  assert.equal(response.status, 403);
+});
