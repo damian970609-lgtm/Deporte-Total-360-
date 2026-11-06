@@ -243,3 +243,25 @@ test("el cron de cinco minutos genera y persiste un calendario aunque no haya ca
   assert.equal(saved.reason, "no_visible_channels");
   assert.deepEqual(saved.events, []);
 });
+
+
+test("no acepta una página HTML como si fuera una guía XMLTV válida", async () => {
+  const fallback = mockFetch();
+  const fetchImpl = async input => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.hostname === "iptv-epg.org") {
+      return new Response("<html><body>Access denied</body></html>", { status: 200 });
+    }
+    return fallback(input);
+  };
+
+  await assert.rejects(
+    buildAutomaticLiveSchedule({
+      channels: channels.slice(0, 2),
+      apiKey: "test-api-key",
+      fetchImpl,
+      now: fixedNow
+    }),
+    /No respondió ninguna guía XMLTV/
+  );
+});
