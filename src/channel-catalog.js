@@ -333,6 +333,40 @@ export function isChannelSuppressed(sql, streamUrl) {
   )).length > 0;
 }
 
+// Register a playlist URL only once. Re-adding the same URL must not force a
+// full re-download or reset its daily refresh deadline.
+export function registerPlaylistSource(sql, sourceUrl, label, createId = () => crypto.randomUUID()) {
+  const existing = Array.from(sql.exec(
+    "SELECT id, label, status, imported_count, last_imported_at FROM sources WHERE url = ?",
+    sourceUrl
+  ))[0];
+  if (existing) {
+    if (String(existing.label || "") !== label) {
+      sql.exec("UPDATE sources SET label = ? WHERE id = ?", label, existing.id);
+    }
+    return {
+      id: existing.id,
+      status: String(existing.status || "queued"),
+      importedCount: Number(existing.imported_count || 0),
+      lastImportedAt: existing.last_imported_at || null,
+      created: false
+    };
+  }
+
+  const id = createId();
+  sql.exec(
+    "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0)",
+    id, sourceUrl, label
+  );
+  return {
+    id,
+    status: "queued",
+    importedCount: 0,
+    lastImportedAt: null,
+    created: true
+  };
+}
+
 // Synchronize favorites without clearing the current list first. This matters
 // on the Workers Free quota: if an insert hits the daily write limit, previous
 // favorites remain intact rather than being deleted by a partially completed PUT.
@@ -980,15 +1014,24 @@ export class ChannelCatalogRoom {
       const sourceUrl = String(payload && payload.url || "").trim();
       const label = cleanText(payload && payload.label || "Lista IPTV", 80);
       if (!validPublicHttpsUrl(sourceUrl)) return response({ error: "URL HTTPS pública no válida." }, 400);
-      const existing = Array.from(this.sql.exec("SELECT id FROM sources WHERE url = ?", sourceUrl))[0];
-      const id = existing ? existing.id : crypto.randomUUID();
-      this.sql.exec(
-        "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0) " +
-        "ON CONFLICT(url) DO UPDATE SET label = excluded.label, status = 'queued', last_error = '', next_refresh_at = 0",
-        id, sourceUrl, label
-      );
+      const registered = registerPlaylistSource(this.sql, sourceUrl, label);
+      if (!registered.created) {
+        return response({
+          saved: true,
+          alreadyExists: true,
+          status: registered.status,
+          importedCount: registered.importedCount,
+          lastImportedAt: registered.lastImportedAt,
+          message: "La lista ya estaba registrada; no se volvió a poner en cola."
+        });
+      }
       await this.state.storage.setAlarm(Date.now() + 1000);
-      return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano." }, 202);
+      return response({
+        saved: true,
+        alreadyExists: false,
+        status: "queued",
+        message: "Lista añadida. Se importará en segundo plano."
+      }, 202);
     }
 
     const sourceRetry = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
