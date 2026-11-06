@@ -621,7 +621,7 @@ export class ChannelCatalogRoom {
         return response({ error: "JSON inválido." }, 400);
       }
       const email = String(payload && payload.email || "").trim().toLowerCase();
-      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         return response({ error: "Correo electrónico no válido." }, 400);
       }
       const now = new Date().toISOString();
