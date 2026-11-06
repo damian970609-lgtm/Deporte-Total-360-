@@ -59,7 +59,7 @@ function validStreamUrl(value, baseUrl) {
     const path = url.pathname.toLowerCase();
     const supported = [
       ".m3u8", ".mpd", ".mp4", ".m4v", ".mov", ".mkv",
-      ".webm", ".ts", ".mpeg", ".mpg", ".flv",
+      ".webm", ".ts", ".mpeg", ".mpg", ".flv", ".m2ts", ".2ts", ".mts",
     ].some(extension => path.endsWith(extension)) ||
       path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest");
     return url.protocol === "https:" && !url.username && !url.password &&
@@ -134,6 +134,180 @@ function parseM3u(text, sourceUrl) {
     metadata = null;
   }
   return channels;
+}
+
+
+function decodeXmlEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
+}
+
+function channelFromPlaylistEntry(nameValue, urlValue, sourceUrl, groupTitle = "", logoValue = "") {
+  let streamUrl = "";
+  try {
+    streamUrl = new URL(String(urlValue || "").trim(), sourceUrl).toString();
+  } catch {
+    return null;
+  }
+  const name = cleanText(nameValue || new URL(streamUrl).hostname, 120);
+  if (!name || !validStreamUrl(streamUrl, sourceUrl)) return null;
+  const group = cleanText(groupTitle, 100);
+  return {
+    name,
+    url: streamUrl,
+    logoUrl: validPublicHttpsUrl(logoValue) ? logoValue : "",
+    groupTitle: group,
+    language: detectChannelLanguage("", name, group),
+    isSports: SPORTS_WORDS.test(name + " " + group) ? 1 : 0
+  };
+}
+
+function parsePls(text, sourceUrl) {
+  const entries = new Map();
+  for (const rawLine of text.split(/\\r?\\n/)) {
+    const line = rawLine.trim();
+    const match = line.match(/^(File|Title)(\\d+)\\s*=\\s*(.*)$/i);
+    if (!match) continue;
+    const id = Number(match[2]);
+    if (!Number.isInteger(id) || id < 1) continue;
+    const row = entries.get(id) || {};
+    row[match[1].toLowerCase()] = match[3].trim();
+    entries.set(id, row);
+  }
+  const channels = [];
+  for (const [id, row] of entries) {
+    if (!row.file) continue;
+    const channel = channelFromPlaylistEntry(row.title || "Canal " + id, row.file, sourceUrl);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+  }
+  return channels;
+}
+
+function parseXspf(text, sourceUrl) {
+  const channels = [];
+  for (const trackMatch of text.matchAll(/<track\\b[^>]*>([\\s\\S]*?)<\\/track>/gi)) {
+    const track = trackMatch[1];
+    const location = track.match(/<location\\b[^>]*>([\\s\\S]*?)<\\/location>/i);
+    if (!location) continue;
+    const title = track.match(/<title\\b[^>]*>([\\s\\S]*?)<\\/title>/i);
+    const logo = track.match(/<(?:image|annotation)\\b[^>]*>([\\s\\S]*?)<\\/(?:image|annotation)>/i);
+    const channel = channelFromPlaylistEntry(
+      title ? decodeXmlEntities(title[1].trim()) : "",
+      decodeXmlEntities(location[1].trim()),
+      sourceUrl,
+      "",
+      logo ? decodeXmlEntities(logo[1].trim()) : ""
+    );
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+  }
+  return channels;
+}
+
+function parseJsonPlaylist(text, sourceUrl) {
+  let root;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    throw new Error("El archivo JSON no contiene datos válidos.");
+  }
+  const channels = [];
+  const visited = new Set();
+  const nestedKeys = ["channels", "streams", "items", "results", "data", "playlist", "entries"];
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 6 || channels.length >= MAX_IMPORTED_CHANNELS) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (visited.has(value)) return;
+    visited.add(value);
+    const pick = keys => {
+      for (const key of keys) {
+        const candidate = value[key];
+        if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+      }
+      return "";
+    };
+    const url = pick(["url", "stream_url", "streamUrl", "src", "link", "file", "direct_source"]);
+    if (url) {
+      const channel = channelFromPlaylistEntry(
+        pick(["name", "title", "channel", "tvg_name", "tvg-name"]),
+        url,
+        sourceUrl,
+        pick(["groupTitle", "group_title", "group", "category", "genre"]),
+        pick(["logoUrl", "logo", "tvg_logo", "tvg-logo"])
+      );
+      if (channel) channels.push(channel);
+    }
+    for (const key of nestedKeys) {
+      if (value[key] && typeof value[key] === "object") visit(value[key], depth + 1);
+    }
+  };
+  visit(root);
+  return channels;
+}
+
+function parsePlainTextPlaylist(text, sourceUrl) {
+  const channels = [];
+  for (const rawLine of text.split(/\\r?\\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";") || line.startsWith("//")) continue;
+    let name = "";
+    let url = line;
+    const pipe = line.indexOf("|");
+    if (pipe > 0) {
+      const left = line.slice(0, pipe).trim();
+      const right = line.slice(pipe + 1).trim();
+      if (/^https?:\\/\\//i.test(right)) {
+        name = left;
+        url = right;
+      } else if (/^https?:\\/\\//i.test(left)) {
+        url = left;
+        name = right;
+      }
+    } else {
+      const comma = line.indexOf(",");
+      if (comma > 0 && /^https?:\\/\\//i.test(line.slice(comma + 1).trim())) {
+        name = line.slice(0, comma).trim();
+        url = line.slice(comma + 1).trim();
+      }
+    }
+    const channel = channelFromPlaylistEntry(name, url, sourceUrl);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+  }
+  return channels;
+}
+
+/**
+ * Detecta y lee formatos habituales de listas IPTV. Las extensiones de cada
+ * señal se validan aparte para no enviar archivos de listas al reproductor.
+ */
+export function parsePlaylist(text, sourceUrl) {
+  const normalized = String(text || "").replace(/^\\uFEFF/, "").trim();
+  if (!normalized) return { format: "unknown", channels: [] };
+  if (normalized.startsWith("#EXTM3U")) {
+    return { format: "m3u", channels: parseM3u(normalized, sourceUrl) };
+  }
+  if (/^\\[playlist\\]/i.test(normalized)) {
+    return { format: "pls", channels: parsePls(normalized, sourceUrl) };
+  }
+  if (/^<\\?xml|^<playlist\\b/i.test(normalized)) {
+    return { format: "xspf", channels: parseXspf(normalized, sourceUrl) };
+  }
+  if (normalized.startsWith("{") || normalized.startsWith("[")) {
+    return { format: "json", channels: parseJsonPlaylist(normalized, sourceUrl) };
+  }
+  return { format: "txt", channels: parsePlainTextPlaylist(normalized, sourceUrl) };
 }
 
 async function fetchPublicPlaylist(sourceUrl) {
@@ -483,10 +657,24 @@ export class ChannelCatalogRoom {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS sources (" +
       "id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, label TEXT NOT NULL, " +
-      "status TEXT NOT NULL DEFAULT 'queued', last_imported_at TEXT, " +
+      "status TEXT NOT NULL DEFAULT 'queued', format TEXT NOT NULL DEFAULT '', last_imported_at TEXT, " +
       "last_error TEXT NOT NULL DEFAULT '', imported_count INTEGER NOT NULL DEFAULT 0, " +
       "next_refresh_at INTEGER NOT NULL DEFAULT 0)"
     );
+    const sourceFormatMigration = Array.from(this.sql.exec(
+      "SELECT version FROM channel_catalog_schema_migrations WHERE version = 4"
+    ));
+    if (sourceFormatMigration.length === 0) {
+      try {
+        this.sql.exec("ALTER TABLE sources ADD COLUMN format TEXT NOT NULL DEFAULT ''");
+      } catch (error) {
+        const message = String(error && error.message || error).toLowerCase();
+        if (!message.includes("duplicate column name")) throw error;
+      }
+      this.sql.exec(
+        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (4)"
+      );
+    }
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS favorites (" +
       "user_sub TEXT NOT NULL, channel_id TEXT NOT NULL, created_at TEXT NOT NULL, " +
@@ -531,6 +719,54 @@ export class ChannelCatalogRoom {
         }
         this.sql.exec(
           "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (2)"
+        );
+        await this.state.storage.setAlarm(Date.now() + 1000);
+      }
+
+      const sportsSourceVersion = Array.from(this.sql.exec(
+        "SELECT version FROM channel_catalog_schema_migrations WHERE version = 3"
+      ));
+      if (sportsSourceVersion.length === 0) {
+        const recommendedSportsSources = [
+          {
+            id: "freecasthub-sports-public",
+            url: "https://raw.githubusercontent.com/freecasthub/public-iptv/main/sports.m3u",
+            label: "FreecastHub · Deportes públicos"
+          },
+          {
+            id: "iptv-validated-sports",
+            url: "https://raw.githubusercontent.com/AdeelWajid/iptv_validated_list/main/playlists/categories/sports.m3u",
+            label: "IPTV Validated · Deportes"
+          },
+          {
+            id: "doubo-sports-public",
+            url: "https://cdn.jsdelivr.net/gh/streamline-iptv/iptv-playlists@dist/categories/sports.m3u",
+            label: "Doubo · Deportes públicos"
+          },
+          {
+            id: "shovo-global-sports-filter",
+            url: "https://shovo127.github.io/IPTV-By-Shovo/index.m3u",
+            label: "IPTV By Shovo · Global (filtro deportivo)"
+          },
+          {
+            id: "free-tv-global-sports-filter",
+            url: "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8",
+            label: "Free-TV · Global (filtro deportivo)"
+          }
+        ];
+        for (const source of recommendedSportsSources) {
+          const existing = Array.from(this.sql.exec(
+            "SELECT id FROM sources WHERE url = ?", source.url
+          ))[0];
+          if (!existing) {
+            this.sql.exec(
+              "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0)",
+              source.id, source.url, source.label
+            );
+          }
+        }
+        this.sql.exec(
+          "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (3)"
         );
         await this.state.storage.setAlarm(Date.now() + 1000);
       }
@@ -658,7 +894,7 @@ export class ChannelCatalogRoom {
 
     if (path === "/sources" && request.method === "GET") {
       const rows = Array.from(this.sql.exec(
-        "SELECT id, url, label, status, last_imported_at, last_error, imported_count FROM sources ORDER BY label COLLATE NOCASE"
+        "SELECT id, url, label, status, format, last_imported_at, last_error, imported_count FROM sources ORDER BY label COLLATE NOCASE"
       ));
       return response({ sources: rows, count: rows.length });
     }
@@ -689,7 +925,7 @@ export class ChannelCatalogRoom {
       ))[0];
       if (!existing) return response({ error: "La lista ya no está registrada." }, 404);
       this.sql.exec(
-        "UPDATE sources SET status = 'queued', last_error = '', imported_count = 0, next_refresh_at = 0 WHERE id = ?",
+        "UPDATE sources SET status = 'queued', format = '', last_error = '', imported_count = 0, next_refresh_at = 0 WHERE id = ?",
         sourceRetry[1]
       );
       await this.state.storage.setAlarm(Date.now() + 1000);
@@ -824,10 +1060,14 @@ export class ChannelCatalogRoom {
         const sourceResponse = fetched.response;
         if (!sourceResponse.ok) throw new Error("La fuente respondió HTTP " + sourceResponse.status + ".");
         const contentType = (sourceResponse.headers.get("Content-Type") || "").toLowerCase();
-        if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista M3U directa.");
+        if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista multimedia directa.");
         const text = await readTextLimited(sourceResponse);
-        if (!text.trimStart().startsWith("#EXTM3U")) throw new Error("La respuesta no es una playlist M3U válida.");
-        const parsed = parseM3u(text, fetched.finalUrl);
+        const parsedPlaylist = parsePlaylist(text, fetched.finalUrl);
+        const parsed = parsedPlaylist.channels;
+        if (parsed.length === 0) {
+          throw new Error("El archivo " + parsedPlaylist.format.toUpperCase() +
+            " se pudo leer, pero no contiene señales compatibles (HLS, DASH, TS o vídeo directo).");
+        }
         // La fuente pudo retirarse mientras se descargaba. En ese caso no se
         // añaden canales nuevos después de que el administrador la haya quitado.
         const stillRegistered = Array.from(this.sql.exec(
@@ -850,10 +1090,15 @@ export class ChannelCatalogRoom {
         }
         imported += parsed.length;
         this.sql.exec(
-          "UPDATE sources SET status = 'imported', last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
-          timestamp, parsed.length, Date.now() + REFRESH_INTERVAL_MS, source.id
+          "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
+          parsedPlaylist.format, timestamp, parsed.length, Date.now() + REFRESH_INTERVAL_MS, source.id
         );
-        results.push({ label: source.label, imported: parsed.length, status: "ok" });
+        results.push({
+          label: source.label,
+          imported: parsed.length,
+          format: parsedPlaylist.format,
+          status: "ok"
+        });
       } catch (error) {
         const message = cleanText(error && error.message || "Error al importar la fuente.", 240);
         this.sql.exec(

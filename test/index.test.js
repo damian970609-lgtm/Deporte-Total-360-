@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, parsePlaylist } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -815,4 +815,47 @@ test("el panel admin puede retirar una fuente y reintentarla con sesión Google 
   } finally {
     globalThis.fetch = previousFetch;
   }
+});
+
+
+test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {
+  const base = "https://lists.example/source.txt";
+
+  const pls = parsePlaylist(
+    "[playlist]\\nNumberOfEntries=1\\nFile1=https://media.example/live.m3u8\\nTitle1=ESPN Sports\\nLength1=-1",
+    base
+  );
+  assert.equal(pls.format, "pls");
+  assert.equal(pls.channels.length, 1);
+  assert.equal(pls.channels[0].name, "ESPN Sports");
+  assert.equal(pls.channels[0].isSports, 1);
+
+  const xspf = parsePlaylist(
+    '<?xml version="1.0"?><playlist version="1"><trackList><track><title>Fútbol TV</title><location>https://media.example/football.mpd</location></track></trackList></playlist>',
+    base
+  );
+  assert.equal(xspf.format, "xspf");
+  assert.equal(xspf.channels[0].url, "https://media.example/football.mpd");
+
+  const json = parsePlaylist(
+    JSON.stringify({ channels: [{ name: "Basketball Live", url: "https://media.example/basket.m3u8", group: "Sports" }] }),
+    base
+  );
+  assert.equal(json.format, "json");
+  assert.equal(json.channels.length, 1);
+  assert.equal(json.channels[0].isSports, 1);
+
+  const txt = parsePlaylist(
+    "Sports Network|https://media.example/sports.ts",
+    base
+  );
+  assert.equal(txt.format, "txt");
+  assert.equal(txt.channels.length, 1);
+  assert.equal(txt.channels[0].url, "https://media.example/sports.ts");
+});
+
+test("rechaza formatos legibles que no contienen señales multimedia compatibles", () => {
+  const result = parsePlaylist("Nombre del canal\\nesto no es una URL", "https://lists.example/channels.txt");
+  assert.equal(result.format, "txt");
+  assert.deepEqual(result.channels, []);
 });
