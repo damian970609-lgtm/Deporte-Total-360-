@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -751,4 +751,68 @@ test("una cuenta no administradora no puede gestionar licencias", async () => {
   });
 
   assert.equal(response.status, 403);
+});
+
+
+test("el panel admin puede retirar una fuente y reintentarla con sesión Google verificada", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname
+            });
+            return new Response(JSON.stringify({ ok: true }), {
+              status: internalRequest.method === "DELETE" ? 200 : 202,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+        })
+      }
+    };
+    const headers = { Authorization: "Bearer signed-google-id-token" };
+    const removeRequest = new Request(
+      "https://worker.example/api/channels/admin/sources/source-123",
+      { method: "DELETE", headers }
+    );
+    const remove = await handleChannelRoutes(
+      removeRequest, env, new URL(removeRequest.url).pathname
+    );
+    assert.equal(remove.status, 200);
+
+    const retryRequest = new Request(
+      "https://worker.example/api/channels/admin/sources/source-123/retry",
+      { method: "POST", headers }
+    );
+    const retry = await handleChannelRoutes(
+      retryRequest, env, new URL(retryRequest.url).pathname
+    );
+    assert.equal(retry.status, 202);
+    assert.deepEqual(forwarded, [
+      { method: "DELETE", path: "/sources/source-123" },
+      { method: "POST", path: "/sources/source-123/retry" }
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
