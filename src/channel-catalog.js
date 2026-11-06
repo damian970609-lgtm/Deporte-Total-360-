@@ -598,7 +598,7 @@ export class ChannelCatalogRoom {
       const licenseType = String(payload && payload.licenseType || "").trim().toLowerCase();
       const note = cleanText(payload && payload.note || "", 180);
       const grantedBy = cleanText(payload && payload.grantedBy || "", 254).toLowerCase();
-      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) ||
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
           !["paid", "free"].includes(licenseType) || !grantedBy) {
         return response({ error: "Los datos de la licencia no son válidos." }, 400);
       }
