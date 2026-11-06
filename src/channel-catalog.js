@@ -794,6 +794,87 @@ export class ChannelCatalogRoom {
     const path = url.pathname;
     if (request.method === "OPTIONS") return response({}, 204);
 
+    // Snapshot persistente de la programación deportiva automática.
+    // Solo el handler interno del Worker escribe aquí; la ruta pública permite GET.
+    if (path === "/auto-schedule" && request.method === "GET") {
+      const saved = await this.state.storage.get("auto_live_schedule");
+      if (!saved || !Array.isArray(saved.events)) {
+        return response({ status: "ok", updatedAt: null, events: [], reason: "not_generated" });
+      }
+      const updatedAt = Date.parse(saved.updatedAt || "");
+      const stale = !Number.isFinite(updatedAt) || Date.now() - updatedAt > 20 * 60 * 1000;
+      return response({ ...saved, status: stale ? "stale" : "ok" });
+    }
+
+    if (path === "/auto-schedule" && request.method === "PUT") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "La programación automática debe ser JSON válido." }, 400);
+      }
+      if (!payload || !Array.isArray(payload.events) || payload.events.length > 160) {
+        return response({ error: "La programación automática tiene un formato inválido." }, 400);
+      }
+      const updatedAt = new Date(payload.updatedAt || "");
+      if (!Number.isFinite(updatedAt.getTime())) {
+        return response({ error: "La fecha de actualización de la programación no es válida." }, 400);
+      }
+      const events = [];
+      for (const row of payload.events) {
+        const event = row && row.event;
+        const startsAt = Date.parse(event && event.startsAt || "");
+        const removeAt = Date.parse(row && row.removeAt || "");
+        if (!event || !String(event.id || "").trim() ||
+            !String(event.title || "").trim() ||
+            !Number.isFinite(startsAt) || !Number.isFinite(removeAt) ||
+            removeAt <= startsAt || !Array.isArray(row.sources)) continue;
+        const sources = row.sources.filter(source =>
+          source && source.available === true && validStreamUrl(source.url) &&
+          String(source.channelName || "").trim() &&
+          Number.isFinite(Number(source.languagePriority)) &&
+          Number.isFinite(Number(source.qualityScore))
+        ).slice(0, 2).map(source => ({
+          channelName: cleanText(source.channelName, 100),
+          url: String(source.url).trim(),
+          programmeTitle: cleanText(source.programmeTitle, 180),
+          programmeEndsAt: Number.isFinite(Date.parse(source.programmeEndsAt || ""))
+            ? new Date(source.programmeEndsAt).toISOString()
+            : new Date(removeAt).toISOString(),
+          qualityScore: Math.max(0, Math.min(1000, Number(source.qualityScore) || 0)),
+          languagePriority: Math.max(0, Math.min(2, Number(source.languagePriority) || 0)),
+          available: true
+        }));
+        if (!sources.length) continue;
+        events.push({
+          event: {
+            id: String(event.id),
+            title: cleanText(event.title, 180),
+            sport: cleanText(event.sport, 60),
+            competition: cleanText(event.competition, 100),
+            homeTeam: cleanText(event.homeTeam, 100),
+            awayTeam: cleanText(event.awayTeam, 100),
+            startsAt: new Date(startsAt).toISOString(),
+            endsAt: Number.isFinite(Date.parse(event.endsAt || ""))
+              ? new Date(event.endsAt).toISOString()
+              : null,
+            status: cleanText(event.status || "scheduled", 40),
+            detailUrl: validPublicHttpsUrl(event.detailUrl)
+              ? String(event.detailUrl)
+              : "https://deporte-total-360-api.damian970609.workers.dev/"
+          },
+          removeAt: new Date(removeAt).toISOString(),
+          sources
+        });
+      }
+      const snapshot = {
+        status: "ok",
+        updatedAt: updatedAt.toISOString(),
+        reason: cleanText(payload.reason || "", 80),
+        events: events.slice(0, 160)
+      };
+      await this.state.storage.put("auto_live_schedule", snapshot);
+      return response({ saved: true, eventCount: snapshot.events.length, updatedAt: snapshot.updatedAt });
+    }
+
     if (path === "/catalog" && request.method === "GET") {
       const admin = url.searchParams.get("scope") === "admin";
       const search = cleanText(url.searchParams.get("q") || "", 100);
