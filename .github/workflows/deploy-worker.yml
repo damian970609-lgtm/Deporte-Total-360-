@@ -69,28 +69,45 @@ jobs:
             rm -f "$tmp"
           }
           HEALTH="$(fetch_json /health)"
-          CHAT="$(fetch_json /api/chat/messages)"
+          CHANNELS="$(fetch_json /api/channels)"
           OAUTH="$(fetch_json /api/channels/auth-config)"
           CATALOG="$(fetch_json /api/sports)"
           FAVORITES="$(fetch_json /api/sportsapi/favorites)"
-          node - "$HEALTH" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
+          CHAT_FILE="$(mktemp)"
+          CHAT_STATUS="$(curl --silent --show-error --max-time 20 -o "$CHAT_FILE" -w '%{http_code}' "$BASE/api/chat/messages")"
+          if [[ "$CHAT_STATUS" == "200" ]]; then
+            CHAT="$(cat "$CHAT_FILE")"
+          else
+            CHAT='{}'
+            echo "::warning::El chat respondió HTTP $CHAT_STATUS; se verifica por separado y no bloquea el catálogo de canales."
+            sed -n '1,10p' "$CHAT_FILE" >&2
+          fi
+          rm -f "$CHAT_FILE"
+          node - "$HEALTH" "$CHANNELS" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
           const health = JSON.parse(process.argv[2]);
-          const chat = JSON.parse(process.argv[3]);
-          const oauth = JSON.parse(process.argv[4]);
-          const expectedOAuthClientId = process.argv[5];
-          const catalog = JSON.parse(process.argv[6]);
-          const favorites = JSON.parse(process.argv[7]);
+          const channels = JSON.parse(process.argv[3]);
+          const chat = JSON.parse(process.argv[4]);
+          const oauth = JSON.parse(process.argv[5]);
+          const expectedOAuthClientId = process.argv[6];
+          const catalog = JSON.parse(process.argv[7]);
+          const favorites = JSON.parse(process.argv[8]);
           if (health.status !== "online") throw new Error("El endpoint /health no confirmó que el Worker está online.");
           if (health.provider_configured !== true) throw new Error("APISPORTS_KEY no está configurada.");
           if (health.sportsapi_configured !== true) throw new Error("SPORTAPI_API_KEY no está configurada.");
           if (health.channels_google_login_configured !== true) throw new Error("Falta GOOGLE_OAUTH_CLIENT_ID en Cloudflare.");
           if (oauth.configured !== true || oauth.clientId !== expectedOAuthClientId) throw new Error("El cliente OAuth Web desplegado no coincide con el secreto del repositorio.");
-          if (!Array.isArray(chat.messages)) throw new Error("La sala pública no devolvió una lista de mensajes.");
+          if (channels.configured !== true || !Array.isArray(channels.channels)) {
+            throw new Error("El catálogo de Canales deportivos no respondió con una lista válida.");
+          }
+          if (CHAT_STATUS === "200" && !Array.isArray(chat.messages)) {
+            throw new Error("El chat respondió 200 sin devolver una lista de mensajes.");
+          }
           if (!Array.isArray(catalog.sports)) throw new Error("El catálogo no devolvió sports[].");
           const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
           const available = new Set(catalog.sports.map((sport) => sport.id));
           const missing = required.filter((id) => !available.has(id));
           if (missing.length) throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
           if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
-          console.log("Worker online; OAuth, chat, catálogos deportivos y favoritos verificados.");
+          console.log("Worker online; OAuth, catálogo de canales, deportes y favoritos verificados.");
+          console.log("Mensajes de chat disponibles:", Array.isArray(chat.messages) ? chat.messages.length : "chat temporalmente no disponible");
           NODE

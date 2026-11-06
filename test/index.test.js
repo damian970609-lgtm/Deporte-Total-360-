@@ -859,3 +859,25 @@ test("rechaza formatos legibles que no contienen señales multimedia compatibles
   assert.equal(result.format, "txt");
   assert.deepEqual(result.channels, []);
 });
+
+
+test("un fallo del Durable Object de chat no derriba el Worker y responde 503 controlado", async () => {
+  const previousFetch = globalThis.fetch;
+  const response = await worker.fetch(
+    request("/api/chat/messages"),
+    {
+      PUBLIC_CHAT_ROOM: {
+        idFromName: () => "public-chat",
+        get: () => ({
+          async fetch() {
+            return new Response("error code: 1101", { status: 500 });
+          }
+        })
+      }
+    }
+  );
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "chat_temporarily_unavailable");
+  globalThis.fetch = previousFetch;
+});

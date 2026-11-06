@@ -1220,7 +1220,29 @@ export default {
       const roomId = env.PUBLIC_CHAT_ROOM.idFromName("deporte-total-360-public");
       const room = env.PUBLIC_CHAT_ROOM.get(roomId);
       const target = new URL("https://public-chat.internal/messages");
-      return room.fetch(new Request(target.toString(), request));
+      try {
+        const roomResponse = await room.fetch(new Request(target.toString(), request));
+        if (roomResponse.status >= 500) {
+          let detail = "";
+          try { detail = (await roomResponse.clone().text()).slice(0, 500); } catch {}
+          console.error("PublicChatRoom devolvió un error", roomResponse.status, detail);
+          return json({
+            error: {
+              code: "chat_temporarily_unavailable",
+              message: "El chat está temporalmente no disponible. El catálogo de canales sigue funcionando."
+            }
+          }, 503, { "Retry-After": "15" });
+        }
+        return roomResponse;
+      } catch (error) {
+        console.error("PublicChatRoom lanzó una excepción", error);
+        return json({
+          error: {
+            code: "chat_temporarily_unavailable",
+            message: "El chat está temporalmente no disponible. El catálogo de canales sigue funcionando."
+          }
+        }, 503, { "Retry-After": "15" });
+      }
     }
 
     if (path === "/api/license" || path.startsWith("/api/channels")) {
