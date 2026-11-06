@@ -24,7 +24,7 @@ tag = "v2-channel-catalog"
 new_sqlite_classes = ["ChannelCatalogRoom"]
 
 [triggers]
-crons = ["0 */6 * * *"]
+crons = ["*/5 * * * *", "0 */6 * * *"]
 
 [vars]
 CHANNELS_ADMIN_EMAIL = "damian970609@gmail.com"

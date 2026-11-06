@@ -1,4 +1,5 @@
 import { ChannelCatalogRoom, handleChannelRoutes } from "./channel-catalog.js";
+import { refreshAutomaticLiveSchedule } from "./automatic-live.js";
 
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -1193,6 +1194,14 @@ export { ChannelCatalogRoom };
 export default {
   async scheduled(controller, env, ctx) {
     if (!env.CHANNEL_CATALOG) return;
+    if (controller.cron === "*/5 * * * *") {
+      ctx.waitUntil(
+        refreshAutomaticLiveSchedule(env).catch(error => {
+          console.error("No se pudo actualizar la programación automática:", error);
+        })
+      );
+      return;
+    }
     const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
     const stub = env.CHANNEL_CATALOG.get(id);
     ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/refresh", { method: "POST" })));
@@ -1261,6 +1270,15 @@ export default {
       return liveSourcesResponse(request, env);
     }
 
+    if (path === "/api/live/auto/schedule") {
+      if (!env.CHANNEL_CATALOG) {
+        return json({ status: "unavailable", events: [], reason: "channel_catalog_not_configured" }, 503);
+      }
+      const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
+      const stub = env.CHANNEL_CATALOG.get(id);
+      return stub.fetch(new Request("https://channel-catalog.internal/auto-schedule"));
+    }
+
     if (path === "/api/sportsapi/favorites") return sportsApiFavoritesResponse();
     if (path.startsWith("/api/sportsapi/")) {
       const config = sportsApiRoute(path);
@@ -1280,6 +1298,7 @@ export default {
         sports: Object.keys(SPORTS).length,
         live_catalog_configured: Boolean(env.LIVE_STREAM_CATALOG_JSON),
         channels_catalog_configured: Boolean(env.CHANNEL_CATALOG),
+        auto_live_schedule_configured: Boolean(env.CHANNEL_CATALOG && (env.SPORTAPI_API_KEY || env.SPORTSAPI_API_KEY)),
         channels_google_login_configured: Boolean(env.GOOGLE_OAUTH_CLIENT_ID)
       });
     }

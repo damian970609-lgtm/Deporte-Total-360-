@@ -152,7 +152,8 @@ de publicar el canal.
 El catálogo, las listas fuente y los favoritos se guardan en un Durable Object
 SQLite de Cloudflare. La importación se procesa en lotes pequeños y continúa
 aunque la aplicación esté cerrada o desinstalada. Un Cron Trigger vuelve a
-consultar las fuentes cada seis horas.
+consultar las fuentes cada seis horas. Otro Cron Trigger, cada cinco minutos,
+actualiza la programación automática de partidos y carreras.
 
 Rutas:
 - `GET /api/channels`: catálogo público visible.
@@ -189,3 +190,26 @@ lista, salvo que una importación traiga un idioma explícito nuevo.
 
 Ruta de administración: `PATCH /api/channels/admin/channels/{id}/language`.
 Valores admitidos: `es`, `en` y `unknown`.
+
+
+## Programación automática de Deportes en vivo
+
+El Worker ejecuta `*/5 * * * *` para consultar los eventos de hoy y mañana en
+los diez deportes favoritos de SportsAPI.app, leer las guías XMLTV regionales,
+cruzarlas con los canales deportivos visibles y verificar las señales directas
+antes de asignarlas. Se selecciona como máximo una señal española y una inglesa
+por evento; si el proveedor no ofrece una coincidencia verificable, el evento
+no se publica como si tuviera señal.
+
+La programación se conserva en el Durable Object del catálogo y se expone en
+`GET /api/live/auto/schedule`. La respuesta lleva `status`, `updatedAt`,
+`reason` y `events[]`; un calendario de más de veinte minutos se marca
+`stale`. La APK consume esta instantánea primero y mantiene su planificador
+local como respaldo si todavía no existe una instantánea o el Worker falla.
+
+Las listas deportivas y sus URLs directas siguen siendo controladas desde el
+panel Damián APK: solo se consideran canales publicados, visibles, deportivos
+y compatibles. El servidor comprueba manifiestos HLS/DASH/Smooth Streaming o
+bytes directos antes de asignarlos. Esa comprobación no garantiza reproducción
+en todos los dispositivos ni elimina DRM, credenciales, geobloqueos o límites
+del proveedor. La reproducción sigue requiriendo que el usuario pulse Play.
