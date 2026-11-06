@@ -83,14 +83,15 @@ jobs:
             sed -n '1,10p' "$CHAT_FILE" >&2
           fi
           rm -f "$CHAT_FILE"
-          node - "$HEALTH" "$CHANNELS" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
+          node - "$HEALTH" "$CHANNELS" "$CHAT" "$CHAT_STATUS" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
           const health = JSON.parse(process.argv[2]);
           const channels = JSON.parse(process.argv[3]);
           const chat = JSON.parse(process.argv[4]);
-          const oauth = JSON.parse(process.argv[5]);
-          const expectedOAuthClientId = process.argv[6];
-          const catalog = JSON.parse(process.argv[7]);
-          const favorites = JSON.parse(process.argv[8]);
+          const chatStatus = process.argv[5];
+          const oauth = JSON.parse(process.argv[6]);
+          const expectedOAuthClientId = process.argv[7];
+          const catalog = JSON.parse(process.argv[8]);
+          const favorites = JSON.parse(process.argv[9]);
           if (health.status !== "online") throw new Error("El endpoint /health no confirmó que el Worker está online.");
           if (health.provider_configured !== true) throw new Error("APISPORTS_KEY no está configurada.");
           if (health.sportsapi_configured !== true) throw new Error("SPORTAPI_API_KEY no está configurada.");
@@ -99,7 +100,7 @@ jobs:
           if (channels.configured !== true || !Array.isArray(channels.channels)) {
             throw new Error("El catálogo de Canales deportivos no respondió con una lista válida.");
           }
-          if (CHAT_STATUS === "200" && !Array.isArray(chat.messages)) {
+          if (chatStatus === "200" && !Array.isArray(chat.messages)) {
             throw new Error("El chat respondió 200 sin devolver una lista de mensajes.");
           }
           if (!Array.isArray(catalog.sports)) throw new Error("El catálogo no devolvió sports[].");
