@@ -822,7 +822,7 @@ test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {
   const base = "https://lists.example/source.txt";
 
   const pls = parsePlaylist(
-    "[playlist]\\nNumberOfEntries=1\\nFile1=https://media.example/live.m3u8\\nTitle1=ESPN Sports\\nLength1=-1",
+    "[playlist]\nNumberOfEntries=1\nFile1=https://media.example/live.m3u8\nTitle1=ESPN Sports\nLength1=-1",
     base
   );
   assert.equal(pls.format, "pls");
