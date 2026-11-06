@@ -11,7 +11,7 @@ const eventStart = new Date(fixedNow.getTime() + 5 * 60 * 1000);
 const eventEnd = new Date(fixedNow.getTime() + 90 * 60 * 1000);
 
 function xmltvTime(date) {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, " +0000");
+  return date.toISOString().replace(/[-:]/g, "").replace("T", "").replace(/\.\d{3}Z$/, " +0000");
 }
 
 const guide = [
@@ -203,4 +203,43 @@ test("falla de forma clara cuando falta la clave SportsAPI", async () => {
     buildAutomaticLiveSchedule({ channels }),
     /SPORTAPI_API_KEY no está configurada/
   );
+});
+
+
+test("el cron de cinco minutos genera y persiste un calendario aunque no haya canales visibles", async () => {
+  let saved = null;
+  const room = {
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/catalog") {
+        return new Response(JSON.stringify({ channels: [], total: 0, hasMore: false }), {
+          status: 200
+        });
+      }
+      if (path === "/auto-schedule" && request.method === "PUT") {
+        saved = await request.json();
+        return new Response(JSON.stringify({ saved: true }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    }
+  };
+  const namespace = {
+    idFromName() { return "catalog-room"; },
+    get() { return room; }
+  };
+  const tasks = [];
+
+  await (async () => {
+    const worker = (await import("../src/index.js")).default;
+    await worker.scheduled(
+      { cron: "*/5 * * * *" },
+      { CHANNEL_CATALOG: namespace, SPORTAPI_API_KEY: "test-api-key" },
+      { waitUntil(task) { tasks.push(task); } }
+    );
+    await Promise.all(tasks);
+  })();
+
+  assert.ok(saved);
+  assert.equal(saved.reason, "no_visible_channels");
+  assert.deepEqual(saved.events, []);
 });
