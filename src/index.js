@@ -515,6 +515,39 @@ async function cachePut(cache, key, response) {
   }
 }
 
+// Public catalogue reads are identical for every user. Cache them briefly at
+// the edge so repeated app opens and pagination do not consume DO read work.
+async function cachedPublicChannelCatalog(request, env, path) {
+  const cacheKey = new Request(new URL(request.url).toString(), { method: "GET" });
+  const cache = globalThis.caches?.default;
+  const cached = await cacheMatch(cache, cacheKey);
+  if (cached) {
+    const headers = new Headers(cached.headers);
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("X-Data-Source", "cache");
+    return new Response(cached.body, {
+      status: cached.status,
+      statusText: cached.statusText,
+      headers
+    });
+  }
+
+  const live = await handleChannelRoutes(request, env, path);
+  if (!live.ok) return live;
+
+  const headers = new Headers(live.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Cache-Control", "public, max-age=60");
+  headers.set("X-Data-Source", "durable-object");
+  const cacheable = new Response(await live.arrayBuffer(), {
+    status: live.status,
+    statusText: live.statusText,
+    headers
+  });
+  await cachePut(cache, cacheKey, cacheable.clone());
+  return cacheable;
+}
+
 function buildUpstreamParams(incoming, config) {
   const params = new URLSearchParams(config.fixed || {});
   const seen = new Set();
@@ -1245,6 +1278,9 @@ export default {
       }
     }
 
+    if (path === "/api/channels" && request.method === "GET") {
+      return cachedPublicChannelCatalog(request, env, path);
+    }
     if (path === "/api/license" || path.startsWith("/api/channels")) {
       return handleChannelRoutes(request, env, path);
     }
