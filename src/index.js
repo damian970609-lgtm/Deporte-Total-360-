@@ -1223,7 +1223,7 @@ export default {
       return room.fetch(new Request(target.toString(), request));
     }
 
-    if (path.startsWith("/api/channels")) {
+    if (path === "/api/license" || path.startsWith("/api/channels")) {
       return handleChannelRoutes(request, env, path);
     }
 
