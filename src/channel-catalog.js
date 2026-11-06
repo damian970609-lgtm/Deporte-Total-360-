@@ -26,7 +26,7 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
 }
 const MAX_PLAYLIST_BYTES = 12 * 1024 * 1024;
 const MAX_IMPORTED_CHANNELS = 30000;
-const REFRESH_BATCH_SIZE = 3;
+const REFRESH_BATCH_SIZE = 2;
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SPORTS_WORDS = /\b(sports?|deportes?|espn|fox sports|tudn|bein sports|dazn|futbol|fútbol|football|soccer|basketball|nba|mlb|ufc|mma|motogp|formula 1|f1|tennis|tenis|golf|rugby|cricket|baseball|hockey|volleyball|voleibol|sportv|gol tv|tyc sports|win sports|teledeporte|liga mx|champions)\b/i;
 
@@ -247,7 +247,17 @@ async function callCatalog(env, path, method = "GET", payload = null, headers = 
     headers: requestHeaders,
     body: payload === null ? undefined : JSON.stringify(payload)
   });
-  return stub.fetch(internalRequest);
+  try {
+    return await stub.fetch(internalRequest);
+  } catch (error) {
+    return response({
+      error: {
+        code: "channel_catalog_unavailable",
+        message: "El catálogo de listas no respondió correctamente. Vuelve a intentarlo.",
+        detail: cleanText(error && error.message || error, 180)
+      }
+    }, 503);
+  }
 }
 
 export async function handleChannelRoutes(request, env, path) {
@@ -386,6 +396,16 @@ export async function handleChannelRoutes(request, env, path) {
       return response({ error: "Usa una URL HTTPS pública, sin credenciales ni direcciones locales." }, 400);
     }
     return callCatalog(env, "/sources", "POST", { url, label });
+  }
+
+  const sourceRetry = path.match(/^\/api\/channels\/admin\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
+  if (sourceRetry && method === "POST") {
+    return callCatalog(env, "/sources/" + encodeURIComponent(sourceRetry[1]) + "/retry", "POST", {});
+  }
+
+  const sourceRemoval = path.match(/^\/api\/channels\/admin\/sources\/([a-zA-Z0-9_-]{1,100})$/);
+  if (sourceRemoval && method === "DELETE") {
+    return callCatalog(env, "/sources/" + encodeURIComponent(sourceRemoval[1]), "DELETE");
   }
 
   if (path === "/api/channels/admin/refresh" && method === "POST") {
@@ -662,6 +682,36 @@ export class ChannelCatalogRoom {
       return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano." }, 202);
     }
 
+    const sourceRetry = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
+    if (sourceRetry && request.method === "POST") {
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM sources WHERE id = ?", sourceRetry[1]
+      ))[0];
+      if (!existing) return response({ error: "La lista ya no está registrada." }, 404);
+      this.sql.exec(
+        "UPDATE sources SET status = 'queued', last_error = '', imported_count = 0, next_refresh_at = 0 WHERE id = ?",
+        sourceRetry[1]
+      );
+      await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({ queued: true, id: sourceRetry[1] }, 202);
+    }
+
+    const sourceRemoval = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})$/);
+    if (sourceRemoval && request.method === "DELETE") {
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM sources WHERE id = ?", sourceRemoval[1]
+      ))[0];
+      if (!existing) return response({ error: "La lista ya no está registrada." }, 404);
+      this.sql.exec("DELETE FROM sources WHERE id = ?", sourceRemoval[1]);
+      // Los canales ya importados se conservan en el catálogo; solo se retira
+      // la fuente para detener sus futuras actualizaciones automáticas.
+      return response({
+        removed: true,
+        id: sourceRemoval[1],
+        preservedChannels: true
+      });
+    }
+
     if (path === "/refresh" && request.method === "POST") {
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({
@@ -778,6 +828,12 @@ export class ChannelCatalogRoom {
         const text = await readTextLimited(sourceResponse);
         if (!text.trimStart().startsWith("#EXTM3U")) throw new Error("La respuesta no es una playlist M3U válida.");
         const parsed = parseM3u(text, fetched.finalUrl);
+        // La fuente pudo retirarse mientras se descargaba. En ese caso no se
+        // añaden canales nuevos después de que el administrador la haya quitado.
+        const stillRegistered = Array.from(this.sql.exec(
+          "SELECT id FROM sources WHERE id = ?", source.id
+        ))[0];
+        if (!stillRegistered) continue;
         const timestamp = new Date().toISOString();
         for (const channel of parsed) {
           const identifier = await identifierFor(channel.name, channel.url);
@@ -811,9 +867,17 @@ export class ChannelCatalogRoom {
       "SELECT MIN(next_refresh_at) AS next_at FROM sources"
     ));
     const nextAt = Number(nextRows[0] && nextRows[0].next_at || 0);
-    if (nextAt > 0) {
-      const alarmAt = nextAt <= Date.now() ? Date.now() + 60 * 1000 : nextAt;
-      await this.state.storage.setAlarm(alarmAt);
+    const pendingRows = Array.from(this.sql.exec(
+      "SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?",
+      Date.now()
+    ));
+    const hasPending = Number(pendingRows[0] && pendingRows[0].total || 0) > 0;
+    if (hasPending) {
+      // Continúa pronto con el siguiente lote; evita dejar listas esperando
+      // un minuto entre cada grupo de tres fuentes.
+      await this.state.storage.setAlarm(Date.now() + 2000);
+    } else if (nextAt > 0) {
+      await this.state.storage.setAlarm(nextAt);
     }
     return { processed: due.length, queued: due.length, imported, results };
   }
