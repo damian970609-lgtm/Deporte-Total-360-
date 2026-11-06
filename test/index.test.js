@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, isChannelSuppressed, parsePlaylist, registerPlaylistSource, selectSportsChannels, syncFavoriteRows } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -897,4 +897,232 @@ test("solo selecciona canales deportivos y limita importación por fuente a 1000
   assert.equal(selected.length, 1000);
   assert.equal(selected[0].name, "Sports Channel 0");
   assert.equal(selected.every(channel => channel.isSports === 1), true);
+});
+
+
+test("el borrado individual se autoriza con Google y se reenvía al catálogo", async () => {
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  const env = {
+    GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+    CHANNELS_ADMIN_EMAIL: "admin@example.com",
+    CHANNEL_CATALOG: {
+      idFromName: () => "catalog",
+      get: () => ({
+        async fetch(internalRequest) {
+          forwarded.push({
+            method: internalRequest.method,
+            path: new URL(internalRequest.url).pathname
+          });
+          return new Response(JSON.stringify({
+            deleted: true,
+            blockedFromReimport: true
+          }), { status: 200 });
+        }
+      })
+    }
+  };
+  const deletion = new Request(
+    "https://worker.example/api/channels/admin/channels/channel-123",
+    { method: "DELETE", headers: { Authorization: "Bearer signed-google-id-token" } }
+  );
+  const response = await handleChannelRoutes(
+    deletion, env, new URL(deletion.url).pathname
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(forwarded, [
+    { method: "DELETE", path: "/channels/channel-123" }
+  ]);
+});
+
+test("la eliminación individual no está disponible para otra cuenta Google", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    aud: "test-web-client",
+    iss: "https://accounts.google.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "viewer@example.com",
+    email_verified: true,
+    sub: "viewer-google-sub"
+  }), { status: 200 });
+  let forwarded = false;
+  const deletion = new Request(
+    "https://worker.example/api/channels/admin/channels/channel-123",
+    { method: "DELETE", headers: { Authorization: "Bearer viewer-id-token" } }
+  );
+  const response = await handleChannelRoutes(deletion, {
+    GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+    CHANNELS_ADMIN_EMAIL: "admin@example.com",
+    CHANNEL_CATALOG: {
+      idFromName: () => "catalog",
+      get: () => ({
+        async fetch() {
+          forwarded = true;
+          return new Response("{}", { status: 200 });
+        }
+      })
+    }
+  }, new URL(deletion.url).pathname);
+  assert.equal(response.status, 403);
+  assert.equal(forwarded, false);
+});
+
+test("el bloqueo persistente usa la URL para impedir reimportar un canal eliminado", () => {
+  const blockedUrl = "https://media.example/channel.m3u8";
+  const queried = [];
+  const sql = {
+    exec(statement, url) {
+      queried.push({ statement, url });
+      return url === blockedUrl ? [{ stream_url: url }] : [];
+    }
+  };
+  assert.equal(isChannelSuppressed(sql, blockedUrl), true);
+  assert.equal(isChannelSuppressed(sql, "https://media.example/other.m3u8"), false);
+  assert.match(queried[0].statement, /blocked_channels WHERE stream_url = \?/);
+});
+
+
+test("el catálogo público usa caché de borde y evita consultas repetidas al Durable Object", async () => {
+  const cacheEntries = installCache();
+  let calls = 0;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName: () => "catalog",
+      get: () => ({
+        async fetch() {
+          calls += 1;
+          return new Response(JSON.stringify({
+            configured: true,
+            total: 1,
+            offset: 0,
+            hasMore: false,
+            channels: [{
+              id: "sports-1",
+              identifier: "sports-1",
+              name: "Sports One",
+              stream_url: "https://media.example/live.m3u8",
+              url: "https://media.example/live.m3u8",
+              is_sports: 1,
+              visible: 1,
+              language: "en"
+            }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      })
+    }
+  };
+
+  const first = await worker.fetch(request("/api/channels?offset=0&limit=200"), env);
+  const second = await worker.fetch(request("/api/channels?offset=0&limit=200"), env);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("Cache-Control"), "public, max-age=60");
+  assert.equal(second.status, 200);
+  assert.equal(second.headers.get("X-Data-Source"), "cache");
+  assert.equal(calls, 1);
+  assert.equal(cacheEntries.size, 1);
+});
+
+test("sincronizar favoritos añade antes de borrar y conserva los anteriores si falla una escritura", () => {
+  const initial = new Set(["keep-me", "remove-me"]);
+  const visibleChannels = new Set(["keep-me", "remove-me", "new-one"]);
+  const operations = [];
+  let failInsert = true;
+  const sql = {
+    exec(statement, ...args) {
+      operations.push(statement);
+      if (statement.startsWith("SELECT channel_id FROM favorites")) {
+        return Array.from(initial, channel_id => ({ channel_id }));
+      }
+      if (statement.startsWith("INSERT OR IGNORE INTO favorites")) {
+        if (failInsert) throw new Error("Exceeded allowed rows written in Durable Objects free tier");
+        const channelId = args[2];
+        if (visibleChannels.has(channelId)) initial.add(channelId);
+        return [];
+      }
+      if (statement.startsWith("DELETE FROM favorites WHERE user_sub = ? AND channel_id = ?")) {
+        initial.delete(args[1]);
+        return [];
+      }
+      throw new Error("SQL inesperado: " + statement);
+    }
+  };
+
+  assert.throws(
+    () => syncFavoriteRows(sql, "user-1", ["keep-me", "new-one"]),
+    /Exceeded allowed rows written/
+  );
+  assert.deepEqual(Array.from(initial).sort(), ["keep-me", "remove-me"]);
+  assert.equal(operations.some(statement => statement.startsWith("DELETE FROM favorites")), false);
+
+  failInsert = false;
+  operations.length = 0;
+  const result = syncFavoriteRows(sql, "user-1", ["keep-me", "new-one"]);
+  assert.deepEqual(Array.from(initial).sort(), ["keep-me", "new-one"]);
+  assert.equal(result.added, 1);
+  assert.equal(result.removed, 1);
+});
+
+test("registrar una URL de lista existente no la vuelve a poner en cola", () => {
+  const existing = {
+    id: "source-1",
+    url: "https://lists.example/sports.m3u",
+    label: "Deportes",
+    status: "imported",
+    imported_count: 125,
+    last_imported_at: "2026-11-06T00:00:00.000Z"
+  };
+  const writes = [];
+  const sql = {
+    exec(statement, ...args) {
+      if (statement.startsWith("SELECT id, label, status, imported_count")) {
+        return existing.url === args[0] ? [existing] : [];
+      }
+      writes.push({statement,args});
+      if (statement.startsWith("UPDATE sources SET label")) existing.label = args[0];
+      return [];
+    }
+  };
+
+  const duplicate = registerPlaylistSource(
+    sql, existing.url, "Deportes", () => "must-not-be-used"
+  );
+  assert.equal(duplicate.created, false);
+  assert.equal(duplicate.status, "imported");
+  assert.equal(duplicate.importedCount, 125);
+  assert.equal(writes.length, 0);
+
+  const renamed = registerPlaylistSource(sql, existing.url, "Fútbol y deportes");
+  assert.equal(renamed.created, false);
+  assert.equal(existing.label, "Fútbol y deportes");
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].statement, /^UPDATE sources SET label/);
+});
+
+test("registrar una nueva lista crea una única fuente en cola", () => {
+  const writes = [];
+  const sql = {
+    exec(statement, ...args) {
+      if (statement.startsWith("SELECT id, label, status, imported_count")) return [];
+      writes.push({statement,args});
+      return [];
+    }
+  };
+  const created = registerPlaylistSource(
+    sql, "https://lists.example/new.m3u", "Nueva lista", () => "source-new"
+  );
+  assert.equal(created.created, true);
+  assert.equal(created.status, "queued");
+  assert.equal(created.id, "source-new");
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].statement, /^INSERT INTO sources/);
 });

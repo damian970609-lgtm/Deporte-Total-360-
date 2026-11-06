@@ -1,6 +1,6 @@
 const JSON_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "Cache-Control": "no-store",
@@ -322,6 +322,86 @@ export function selectSportsChannels(channels) {
     .slice(0, MAX_IMPORTED_CHANNELS);
 }
 
+// A deleted channel is blocked by its exact stream URL, not only by its current
+// display name or generated ID. This prevents later playlist refreshes from
+// silently recreating the same signal under a renamed entry.
+export function isChannelSuppressed(sql, streamUrl) {
+  if (typeof streamUrl !== "string" || !streamUrl.trim()) return false;
+  return Array.from(sql.exec(
+    "SELECT stream_url FROM blocked_channels WHERE stream_url = ?",
+    streamUrl.trim()
+  )).length > 0;
+}
+
+// Register a playlist URL only once. Re-adding the same URL must not force a
+// full re-download or reset its daily refresh deadline.
+export function registerPlaylistSource(sql, sourceUrl, label, createId = () => crypto.randomUUID()) {
+  const existing = Array.from(sql.exec(
+    "SELECT id, label, status, imported_count, last_imported_at FROM sources WHERE url = ?",
+    sourceUrl
+  ))[0];
+  if (existing) {
+    if (String(existing.label || "") !== label) {
+      sql.exec("UPDATE sources SET label = ? WHERE id = ?", label, existing.id);
+    }
+    return {
+      id: existing.id,
+      status: String(existing.status || "queued"),
+      importedCount: Number(existing.imported_count || 0),
+      lastImportedAt: existing.last_imported_at || null,
+      created: false
+    };
+  }
+
+  const id = createId();
+  sql.exec(
+    "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0)",
+    id, sourceUrl, label
+  );
+  return {
+    id,
+    status: "queued",
+    importedCount: 0,
+    lastImportedAt: null,
+    created: true
+  };
+}
+
+// Synchronize favorites without clearing the current list first. This matters
+// on the Workers Free quota: if an insert hits the daily write limit, previous
+// favorites remain intact rather than being deleted by a partially completed PUT.
+export function syncFavoriteRows(sql, userSub, channelIds, timestamp = new Date().toISOString()) {
+  const currentRows = Array.from(sql.exec(
+    "SELECT channel_id FROM favorites WHERE user_sub = ?",
+    userSub
+  ));
+  const current = new Set(currentRows.map(row => String(row.channel_id)));
+  const desired = new Set(channelIds);
+  let added = 0;
+  let removed = 0;
+
+  for (const channelId of desired) {
+    if (current.has(channelId)) continue;
+    sql.exec(
+      "INSERT OR IGNORE INTO favorites (user_sub, channel_id, created_at) " +
+      "SELECT ?, id, ? FROM channels WHERE id = ? AND visible = 1 AND is_sports = 1",
+      userSub, timestamp, channelId
+    );
+    added += 1;
+  }
+
+  // Delete only after every new favorite has been inserted successfully.
+  for (const channelId of current) {
+    if (desired.has(channelId)) continue;
+    sql.exec(
+      "DELETE FROM favorites WHERE user_sub = ? AND channel_id = ?",
+      userSub, channelId
+    );
+    removed += 1;
+  }
+  return { added, removed, count: desired.size };
+}
+
 async function fetchPublicPlaylist(sourceUrl) {
   let currentUrl = sourceUrl;
   for (let redirects = 0; redirects <= 5; redirects++) {
@@ -598,6 +678,11 @@ export async function handleChannelRoutes(request, env, path) {
     return callCatalog(env, "/sources/" + encodeURIComponent(sourceRemoval[1]), "DELETE");
   }
 
+  const channelRemoval = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+  if (channelRemoval && method === "DELETE") {
+    return callCatalog(env, "/channels/" + encodeURIComponent(channelRemoval[1]), "DELETE");
+  }
+
   if (path === "/api/channels/admin/refresh" && method === "POST") {
     return callCatalog(env, "/refresh", "POST", {});
   }
@@ -695,6 +780,11 @@ export class ChannelCatalogRoom {
       "CREATE TABLE IF NOT EXISTS favorites (" +
       "user_sub TEXT NOT NULL, channel_id TEXT NOT NULL, created_at TEXT NOT NULL, " +
       "PRIMARY KEY(user_sub, channel_id))"
+    );
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS blocked_channels (" +
+      "stream_url TEXT PRIMARY KEY, channel_id TEXT NOT NULL, " +
+      "name TEXT NOT NULL, created_at TEXT NOT NULL)"
     );
 
     this.sql.exec(
@@ -924,15 +1014,24 @@ export class ChannelCatalogRoom {
       const sourceUrl = String(payload && payload.url || "").trim();
       const label = cleanText(payload && payload.label || "Lista IPTV", 80);
       if (!validPublicHttpsUrl(sourceUrl)) return response({ error: "URL HTTPS pública no válida." }, 400);
-      const existing = Array.from(this.sql.exec("SELECT id FROM sources WHERE url = ?", sourceUrl))[0];
-      const id = existing ? existing.id : crypto.randomUUID();
-      this.sql.exec(
-        "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0) " +
-        "ON CONFLICT(url) DO UPDATE SET label = excluded.label, status = 'queued', last_error = '', next_refresh_at = 0",
-        id, sourceUrl, label
-      );
+      const registered = registerPlaylistSource(this.sql, sourceUrl, label);
+      if (!registered.created) {
+        return response({
+          saved: true,
+          alreadyExists: true,
+          status: registered.status,
+          importedCount: registered.importedCount,
+          lastImportedAt: registered.lastImportedAt,
+          message: "La lista ya estaba registrada; no se volvió a poner en cola."
+        });
+      }
       await this.state.storage.setAlarm(Date.now() + 1000);
-      return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano." }, 202);
+      return response({
+        saved: true,
+        alreadyExists: false,
+        status: "queued",
+        message: "Lista añadida. Se importará en segundo plano."
+      }, 202);
     }
 
     const sourceRetry = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
@@ -963,6 +1062,26 @@ export class ChannelCatalogRoom {
         id: sourceRemoval[1],
         preservedChannels: true
       });
+    }
+
+    const channelRemoval = path.match(/^\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+    if (channelRemoval && request.method === "DELETE") {
+      const channelId = channelRemoval[1];
+      const existing = Array.from(this.sql.exec(
+        "SELECT id, stream_url, name FROM channels WHERE id = ?",
+        channelId
+      ))[0];
+      if (!existing) return response({ error: "Canal no encontrado." }, 404);
+      const timestamp = new Date().toISOString();
+      this.sql.exec(
+        "INSERT INTO blocked_channels (stream_url, channel_id, name, created_at) " +
+        "VALUES (?, ?, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
+        "channel_id = excluded.channel_id, name = excluded.name, created_at = excluded.created_at",
+        existing.stream_url, existing.id, existing.name, timestamp
+      );
+      this.sql.exec("DELETE FROM favorites WHERE channel_id = ?", channelId);
+      this.sql.exec("DELETE FROM channels WHERE id = ?", channelId);
+      return response({ deleted: true, id: channelId, blockedFromReimport: true });
     }
 
     if (path === "/refresh" && request.method === "POST") {
@@ -1022,9 +1141,10 @@ export class ChannelCatalogRoom {
     if (path === "/favorites" && request.method === "GET") {
       const userSub = request.headers.get("X-Channel-User-Sub") || "";
       if (!userSub) return response({ error: "Identidad no disponible." }, 401);
+      // Hidden channels remain favorites. Explicit channel deletion removes the
+      // favorite row, so visibility must not silently erase saved user choices.
       const rows = Array.from(this.sql.exec(
-        "SELECT f.channel_id FROM favorites f INNER JOIN channels c ON c.id = f.channel_id " +
-        "WHERE f.user_sub = ? AND c.visible = 1 AND c.is_sports = 1",
+        "SELECT channel_id FROM favorites WHERE user_sub = ? ORDER BY created_at ASC",
         userSub
       ));
       return response({ channelIds: rows.map(row => row.channel_id) });
@@ -1038,17 +1158,17 @@ export class ChannelCatalogRoom {
         return response({ error: "JSON inválido." }, 400);
       }
       const ids = Array.isArray(payload && payload.channelIds)
-        ? Array.from(new Set(payload.channelIds.filter(id => typeof id === "string").slice(0, 2000)))
+        ? Array.from(new Set(payload.channelIds.filter(id =>
+            typeof id === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(id)
+          ).slice(0, 2000)))
         : [];
-      this.sql.exec("DELETE FROM favorites WHERE user_sub = ?", userSub);
-      for (const channelId of ids) {
-        this.sql.exec(
-          "INSERT OR IGNORE INTO favorites (user_sub, channel_id, created_at) " +
-          "SELECT ?, id, ? FROM channels WHERE id = ? AND visible = 1 AND is_sports = 1",
-          userSub, new Date().toISOString(), channelId
-        );
-      }
-      return response({ saved: true, count: ids.length });
+      const synced = syncFavoriteRows(this.sql, userSub, ids);
+      return response({
+        saved: true,
+        count: synced.count,
+        added: synced.added,
+        removed: synced.removed
+      });
     }
 
     return response({ error: "Ruta interna no encontrada." }, 404);
@@ -1100,7 +1220,9 @@ export class ChannelCatalogRoom {
         ))[0];
         if (!stillRegistered) continue;
         const timestamp = new Date().toISOString();
+        let importedForSource = 0;
         for (const channel of parsed) {
+          if (isChannelSuppressed(this.sql, channel.url)) continue;
           const identifier = await identifierFor(channel.name, channel.url);
           this.sql.exec(
             "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
@@ -1116,15 +1238,16 @@ export class ChannelCatalogRoom {
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
             channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
           );
+          importedForSource += 1;
         }
-        imported += parsed.length;
+        imported += importedForSource;
         this.sql.exec(
           "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
-          parsedPlaylist.format, timestamp, parsed.length, Date.now() + REFRESH_INTERVAL_MS, source.id
+          parsedPlaylist.format, timestamp, importedForSource, Date.now() + REFRESH_INTERVAL_MS, source.id
         );
         results.push({
           label: source.label,
-          imported: parsed.length,
+          imported: importedForSource,
           format: parsedPlaylist.format,
           status: "ok"
         });
