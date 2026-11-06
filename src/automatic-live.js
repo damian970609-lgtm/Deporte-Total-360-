@@ -100,7 +100,7 @@ export function parseXmltv(body) {
       channelId: attrs.channel,
       channelName: channelNames.get(attrs.channel) || attrs.channel,
       title,
-      description: xmlTag(match[2], "desc"),
+      description: [xmlTag(match[2], "sub-title"), xmlTag(match[2], "desc")].filter(Boolean).join(" "),
       startsAt,
       endsAt
     });
@@ -322,6 +322,9 @@ async function fetchProgrammes(fetchImpl) {
     for (const body of bodies) {
       if (!body) continue;
       try {
+        // No contar una página HTML como una guía correcta: una respuesta
+        // HTML con HTTP 200 no debe vaciar el calendario anterior.
+        if (!/<tv\\b/i.test(body)) continue;
         programmes.push(...parseXmltv(body));
         successful++;
       } catch {
