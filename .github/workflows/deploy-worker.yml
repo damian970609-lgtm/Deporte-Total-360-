@@ -69,7 +69,22 @@ jobs:
             rm -f "$tmp"
           }
           HEALTH="$(fetch_json /health)"
-          CHANNELS="$(fetch_json /api/channels)"
+          CHANNELS_FILE="$(mktemp)"
+          CHANNELS_STATUS="$(curl --silent --show-error --max-time 20 -o "$CHANNELS_FILE" -w '%{http_code}' "$BASE/api/channels")"
+          CHANNELS_QUOTA_EXHAUSTED="false"
+          if [[ "$CHANNELS_STATUS" == "200" ]]; then
+            CHANNELS="$(cat "$CHANNELS_FILE")"
+          elif grep -q "Exceeded allowed rows written in Durable Objects free tier" "$CHANNELS_FILE"; then
+            CHANNELS_QUOTA_EXHAUSTED="true"
+            CHANNELS='{"configured":false,"channels":[]}'
+            echo "::warning::La cuota diaria gratuita de escrituras está agotada. El catálogo se volverá a verificar después del reinicio diario de Cloudflare (00:00 UTC)."
+          else
+            echo "::error::La ruta /api/channels respondió HTTP $CHANNELS_STATUS."
+            sed -n '1,30p' "$CHANNELS_FILE" >&2
+            rm -f "$CHANNELS_FILE"
+            exit 1
+          fi
+          rm -f "$CHANNELS_FILE"
           OAUTH="$(fetch_json /api/channels/auth-config)"
           CATALOG="$(fetch_json /api/sports)"
           FAVORITES="$(fetch_json /api/sportsapi/favorites)"
@@ -83,22 +98,27 @@ jobs:
             sed -n '1,10p' "$CHAT_FILE" >&2
           fi
           rm -f "$CHAT_FILE"
-          node - "$HEALTH" "$CHANNELS" "$CHAT" "$CHAT_STATUS" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
+          node - "$HEALTH" "$CHANNELS" "$CHAT" "$CHAT_STATUS" "$CHANNELS_QUOTA_EXHAUSTED" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
           const health = JSON.parse(process.argv[2]);
           const channels = JSON.parse(process.argv[3]);
           const chat = JSON.parse(process.argv[4]);
           const chatStatus = process.argv[5];
-          const oauth = JSON.parse(process.argv[6]);
-          const expectedOAuthClientId = process.argv[7];
-          const catalog = JSON.parse(process.argv[8]);
-          const favorites = JSON.parse(process.argv[9]);
+          const channelsQuotaExhausted = process.argv[6] === "true";
+          const oauth = JSON.parse(process.argv[7]);
+          const expectedOAuthClientId = process.argv[8];
+          const catalog = JSON.parse(process.argv[9]);
+          const favorites = JSON.parse(process.argv[10]);
           if (health.status !== "online") throw new Error("El endpoint /health no confirmó que el Worker está online.");
           if (health.provider_configured !== true) throw new Error("APISPORTS_KEY no está configurada.");
           if (health.sportsapi_configured !== true) throw new Error("SPORTAPI_API_KEY no está configurada.");
           if (health.channels_google_login_configured !== true) throw new Error("Falta GOOGLE_OAUTH_CLIENT_ID en Cloudflare.");
           if (oauth.configured !== true || oauth.clientId !== expectedOAuthClientId) throw new Error("El cliente OAuth Web desplegado no coincide con el secreto del repositorio.");
-          if (channels.configured !== true || !Array.isArray(channels.channels)) {
+          if (!channelsQuotaExhausted &&
+              (channels.configured !== true || !Array.isArray(channels.channels))) {
             throw new Error("El catálogo de Canales deportivos no respondió con una lista válida.");
+          }
+          if (channelsQuotaExhausted) {
+            console.warn("La API de canales no se pudo comprobar porque Cloudflare agotó la cuota diaria gratuita de escrituras.");
           }
           if (chatStatus === "200" && !Array.isArray(chat.messages)) {
             throw new Error("El chat respondió 200 sin devolver una lista de mensajes.");
