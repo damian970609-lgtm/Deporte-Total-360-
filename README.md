@@ -150,9 +150,17 @@ ese ID; la URL multimedia solo aparece en las vistas de la aplicación después
 de publicar el canal.
 
 El catálogo, las listas fuente y los favoritos se guardan en un Durable Object
-SQLite de Cloudflare. La importación se procesa en lotes pequeños y continúa
-aunque la aplicación esté cerrada o desinstalada. Un Cron Trigger despierta el proceso cada seis horas; cada fuente se vuelve a
-importar como máximo una vez al día, salvo que el administrador fuerce una actualización.
+SQLite de Cloudflare y no se eliminan cuando se reinicia la cuota diaria. La
+importación se procesa en lotes pequeños y continúa aunque la aplicación esté
+cerrada o desinstalada. Un Cron Trigger despierta el proceso cada seis horas,
+a los minutos :05 UTC; por tanto, el primer ciclo tras el reinicio de cuota de
+00:00 UTC comienza a las 00:05 UTC (20:05 del día anterior en Guyana). Cada
+fuente se vuelve a importar como máximo una vez al día, salvo que el
+administrador fuerce una actualización. El catálogo público usa una caché
+temporal de borde de 60 segundos para reducir lecturas repetidas del Durable
+Object. La sincronización de favoritos inserta primero los cambios nuevos y
+solo después elimina los que se quitaron; si una escritura falla por cuota,
+la lista anterior no se borra parcialmente.
 
 Rutas:
 - `GET /api/channels`: catálogo público visible.
