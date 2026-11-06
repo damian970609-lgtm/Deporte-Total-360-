@@ -277,6 +277,25 @@ export async function handleChannelRoutes(request, env, path) {
     );
   }
 
+  // Comprobación de licencia para la aplicación completa.
+  // El correo solo se acepta después de verificar el ID token con Google.
+  if (path === "/api/license") {
+    if (method !== "GET") return response({ error: "Método no permitido" }, 405);
+    const identity = await googleIdentity(request, env);
+    if (identity.error) return identity.error;
+    if (isAdmin(identity, env)) {
+      return response({
+        allowed: true,
+        licenseType: "owner",
+        status: "active",
+        email: identity.email
+      });
+    }
+    return callCatalog(env, "/licenses/check", "GET", null, {
+      "X-License-Email": identity.email
+    });
+  }
+
   if (path === "/api/channels/favorites") {
     if (method !== "GET" && method !== "PUT") return response({ error: "Método no permitido" }, 405);
     const identity = await googleIdentity(request, env);
@@ -304,6 +323,45 @@ export async function handleChannelRoutes(request, env, path) {
   if (identity.error) return identity.error;
   if (!isAdmin(identity, env)) {
     return response({ error: { code: "admin_required", message: "Esta cuenta no tiene permisos de administrador." } }, 403);
+  }
+
+  // Gestión de licencias: solo la cuenta administradora puede conceder,
+  // consultar o revocar accesos de pago y pases gratuitos.
+  if (path === "/api/channels/admin/licenses" && method === "GET") {
+    return callCatalog(env, "/licenses", "GET");
+  }
+
+  if (path === "/api/channels/admin/licenses" && method === "POST") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    const email = String(payload && payload.email || "").trim().toLowerCase();
+    const licenseType = String(payload && payload.licenseType || "").trim().toLowerCase();
+    const note = cleanText(payload && payload.note || "", 180);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+      return response({ error: "Introduce un correo electrónico válido." }, 400);
+    }
+    if (!["paid", "free"].includes(licenseType)) {
+      return response({ error: "La licencia debe ser paid o free." }, 400);
+    }
+    return callCatalog(env, "/licenses", "POST", {
+      email, licenseType, note, grantedBy: identity.email
+    });
+  }
+
+  if (path === "/api/channels/admin/licenses/revoke" && method === "PATCH") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    const email = String(payload && payload.email || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+      return response({ error: "Introduce un correo electrónico válido." }, 400);
+    }
+    return callCatalog(env, "/licenses/revoke", "PATCH", {
+      email, revokedBy: identity.email
+    });
   }
 
   if (path === "/api/channels/admin/catalog" && method === "GET") {
@@ -415,6 +473,15 @@ export class ChannelCatalogRoom {
       "PRIMARY KEY(user_sub, channel_id))"
     );
 
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS user_licenses (" +
+      "email TEXT PRIMARY KEY, license_type TEXT NOT NULL CHECK(license_type IN ('paid','free')), " +
+      "status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')), " +
+      "note TEXT NOT NULL DEFAULT '', granted_at TEXT NOT NULL, granted_by TEXT NOT NULL, " +
+      "updated_at TEXT NOT NULL)"
+    );
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_user_licenses_status ON user_licenses(status, license_type)");
+
     // Migración idempotente: registra una lista deportiva pública por defecto
     // una sola vez y la coloca primero en la cola de importación.
     this.state.blockConcurrencyWhile(async () => {
@@ -490,6 +557,83 @@ export class ChannelCatalogRoom {
           visible: Boolean(row.visible)
         }))
       });
+    }
+
+    if (path === "/licenses/check" && request.method === "GET") {
+      const email = String(request.headers.get("X-License-Email") || "")
+        .trim().toLowerCase();
+      if (!email) return response({ error: "Correo verificado no disponible." }, 400);
+      const row = Array.from(this.sql.exec(
+        "SELECT email, license_type, status, granted_at FROM user_licenses WHERE email = ?",
+        email
+      ))[0];
+      if (!row) {
+        return response({
+          allowed: false, status: "not_found", licenseType: null, email
+        });
+      }
+      return response({
+        allowed: row.status === "active",
+        status: row.status,
+        licenseType: row.license_type,
+        email: row.email,
+        grantedAt: row.granted_at
+      });
+    }
+
+    if (path === "/licenses" && request.method === "GET") {
+      const rows = Array.from(this.sql.exec(
+        "SELECT email, license_type, status, note, granted_at, granted_by, updated_at " +
+        "FROM user_licenses ORDER BY updated_at DESC, email COLLATE NOCASE LIMIT 500"
+      ));
+      return response({ licenses: rows, count: rows.length });
+    }
+
+    if (path === "/licenses" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const email = String(payload && payload.email || "").trim().toLowerCase();
+      const licenseType = String(payload && payload.licenseType || "").trim().toLowerCase();
+      const note = cleanText(payload && payload.note || "", 180);
+      const grantedBy = cleanText(payload && payload.grantedBy || "", 254).toLowerCase();
+      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) ||
+          !["paid", "free"].includes(licenseType) || !grantedBy) {
+        return response({ error: "Los datos de la licencia no son válidos." }, 400);
+      }
+      const now = new Date().toISOString();
+      this.sql.exec(
+        "INSERT INTO user_licenses (email, license_type, status, note, granted_at, granted_by, updated_at) " +
+        "VALUES (?, ?, 'active', ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET " +
+        "license_type = excluded.license_type, status = 'active', note = excluded.note, " +
+        "granted_at = excluded.granted_at, granted_by = excluded.granted_by, updated_at = excluded.updated_at",
+        email, licenseType, note, now, grantedBy, now
+      );
+      return response({
+        saved: true, email, licenseType, status: "active", grantedAt: now
+      });
+    }
+
+    if (path === "/licenses/revoke" && request.method === "PATCH") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const email = String(payload && payload.email || "").trim().toLowerCase();
+      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+        return response({ error: "Correo electrónico no válido." }, 400);
+      }
+      const now = new Date().toISOString();
+      const existing = Array.from(this.sql.exec(
+        "SELECT email FROM user_licenses WHERE email = ?", email
+      ))[0];
+      if (!existing) return response({ error: "No hay una licencia registrada para ese correo." }, 404);
+      this.sql.exec(
+        "UPDATE user_licenses SET status = 'revoked', updated_at = ? WHERE email = ?",
+        now, email
+      );
+      return response({ revoked: true, email, status: "revoked" });
     }
 
     if (path === "/sources" && request.method === "GET") {
