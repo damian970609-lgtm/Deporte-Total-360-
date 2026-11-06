@@ -898,3 +898,63 @@ test("solo selecciona canales deportivos y limita importación por fuente a 1000
   assert.equal(selected[0].name, "Sports Channel 0");
   assert.equal(selected.every(channel => channel.isSports === 1), true);
 });
+
+
+test("programación automática pública lee el snapshot persistido de Cloudflare", async () => {
+  const schedule = {
+    status: "ok",
+    updatedAt: "2026-11-06T15:00:00.000Z",
+    events: [{
+      event: {
+        id: "sportsapi-fixture-123",
+        title: "Blue FC vs Red FC",
+        sport: "Fútbol",
+        startsAt: "2026-11-06T15:05:00.000Z"
+      },
+      removeAt: "2026-11-06T16:30:00.000Z",
+      sources: [{
+        channelName: "ESPN Español",
+        url: "https://media.example/live.m3u8",
+        programmeTitle: "Blue FC vs Red FC",
+        programmeEndsAt: "2026-11-06T16:30:00.000Z",
+        qualityScore: 400,
+        languagePriority: 2,
+        available: true
+      }]
+    }]
+  };
+  const namespace = {
+    idFromName(name) {
+      assert.equal(name, "deporte-total-360-channel-catalog");
+      return "catalog-room";
+    },
+    get() {
+      return {
+        async fetch(internalRequest) {
+          assert.equal(new URL(internalRequest.url).pathname, "/auto-schedule");
+          return new Response(JSON.stringify(schedule), {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+      };
+    }
+  };
+  const response = await worker.fetch(
+    request("/api/live/auto/schedule"),
+    { CHANNEL_CATALOG: namespace }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.status, "ok");
+  assert.equal(body.events[0].sources[0].channelName, "ESPN Español");
+});
+
+test("programación automática devuelve 503 si el catálogo central no está conectado", async () => {
+  const response = await worker.fetch(request("/api/live/auto/schedule"), {});
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.status, "unavailable");
+});
