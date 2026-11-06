@@ -24,8 +24,8 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
   if (/\b(english|ingles)\b/.test(descriptiveText)) return "en";
   return "unknown";
 }
-const MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
-const MAX_IMPORTED_CHANNELS = 12000;
+const MAX_PLAYLIST_BYTES = 12 * 1024 * 1024;
+const MAX_IMPORTED_CHANNELS = 30000;
 const REFRESH_BATCH_SIZE = 3;
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SPORTS_WORDS = /\b(sports?|deportes?|espn|fox sports|tudn|bein sports|dazn|futbol|fútbol|football|soccer|basketball|nba|mlb|ufc|mma|motogp|formula 1|f1|tennis|tenis|golf|rugby|cricket|baseball|hockey|volleyball|voleibol|sportv|gol tv|tyc sports|win sports|teledeporte|liga mx|champions)\b/i;
@@ -57,8 +57,13 @@ function validStreamUrl(value, baseUrl) {
   try {
     const url = new URL(String(value || "").trim(), baseUrl);
     const path = url.pathname.toLowerCase();
+    const supported = [
+      ".m3u8", ".mpd", ".mp4", ".m4v", ".mov", ".mkv",
+      ".webm", ".ts", ".mpeg", ".mpg", ".flv",
+    ].some(extension => path.endsWith(extension)) ||
+      path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest");
     return url.protocol === "https:" && !url.username && !url.password &&
-      (path.endsWith(".m3u8") || path.endsWith(".mp4") || path.endsWith(".ts"));
+      supported;
   } catch {
     return false;
   }
@@ -129,6 +134,32 @@ function parseM3u(text, sourceUrl) {
     metadata = null;
   }
   return channels;
+}
+
+async function fetchPublicPlaylist(sourceUrl) {
+  let currentUrl = sourceUrl;
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    if (!validPublicHttpsUrl(currentUrl)) {
+      throw new Error("La redirección apunta a una URL no segura.");
+    }
+    const result = await fetch(currentUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, text/plain;q=0.9",
+        "User-Agent": "DeporteTotal360-ChannelCatalog/1.1"
+      },
+      signal: AbortSignal.timeout(25000)
+    });
+    if ([301, 302, 303, 307, 308].includes(result.status)) {
+      const location = result.headers.get("Location");
+      if (!location) throw new Error("La fuente redirige sin indicar la dirección de destino.");
+      currentUrl = new URL(location, currentUrl).toString();
+      continue;
+    }
+    return { response: result, finalUrl: currentUrl };
+  }
+  throw new Error("La fuente realizó demasiadas redirecciones.");
 }
 
 async function readTextLimited(sourceResponse) {
@@ -595,24 +626,14 @@ export class ChannelCatalogRoom {
     for (const source of due) {
       try {
         if (!validPublicHttpsUrl(source.url)) throw new Error("La fuente no es una URL HTTPS pública.");
-        const sourceResponse = await fetch(source.url, {
-          method: "GET",
-          redirect: "manual",
-          headers: {
-            "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, text/plain;q=0.9",
-            "User-Agent": "DeporteTotal360-ChannelCatalog/1.0"
-          },
-          signal: AbortSignal.timeout(15000)
-        });
-        if (sourceResponse.status >= 300 && sourceResponse.status < 400) {
-          throw new Error("La fuente redirige; registra la URL HTTPS final de la lista.");
-        }
+        const fetched = await fetchPublicPlaylist(source.url);
+        const sourceResponse = fetched.response;
         if (!sourceResponse.ok) throw new Error("La fuente respondió HTTP " + sourceResponse.status + ".");
         const contentType = (sourceResponse.headers.get("Content-Type") || "").toLowerCase();
         if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista M3U directa.");
         const text = await readTextLimited(sourceResponse);
         if (!text.trimStart().startsWith("#EXTM3U")) throw new Error("La respuesta no es una playlist M3U válida.");
-        const parsed = parseM3u(text, source.url);
+        const parsed = parseM3u(text, fetched.finalUrl);
         const timestamp = new Date().toISOString();
         for (const channel of parsed) {
           const identifier = await identifierFor(channel.name, channel.url);
