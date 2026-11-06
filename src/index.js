@@ -2,7 +2,7 @@ import { ChannelCatalogRoom, handleChannelRoutes } from "./channel-catalog.js";
 
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "X-Content-Type-Options": "nosniff"
