@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, parsePlaylist } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -880,4 +880,20 @@ test("un fallo del Durable Object de chat no derriba el Worker y responde 503 co
   assert.equal(response.status, 503);
   assert.equal(body.error.code, "chat_temporarily_unavailable");
   globalThis.fetch = previousFetch;
+});
+
+
+test("solo selecciona canales deportivos y limita importación por fuente a 1000", () => {
+  const mixed = [
+    { name: "General TV", url: "https://media.example/general.m3u8", isSports: 0 },
+    ...Array.from({ length: 1200 }, (_, index) => ({
+      name: "Sports Channel " + index,
+      url: "https://media.example/sports-" + index + ".m3u8",
+      isSports: 1
+    }))
+  ];
+  const selected = selectSportsChannels(mixed);
+  assert.equal(selected.length, 1000);
+  assert.equal(selected[0].name, "Sports Channel 0");
+  assert.equal(selected.every(channel => channel.isSports === 1), true);
 });

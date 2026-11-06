@@ -25,9 +25,13 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
   return "unknown";
 }
 const MAX_PLAYLIST_BYTES = 12 * 1024 * 1024;
-const MAX_IMPORTED_CHANNELS = 30000;
+// Limita el trabajo de lectura y, sobre todo, las filas escritas en SQLite DO.
+const MAX_PARSED_PLAYLIST_CHANNELS = 20000;
+const MAX_IMPORTED_CHANNELS = 1000;
 const REFRESH_BATCH_SIZE = 2;
-const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
+// escribir de nuevo miles de filas idénticas en el plan gratuito.
+const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const SPORTS_WORDS = /\b(sports?|deportes?|espn|fox sports|tudn|bein sports|dazn|futbol|fútbol|football|soccer|basketball|nba|mlb|ufc|mma|motogp|formula 1|f1|tennis|tenis|golf|rugby|cricket|baseball|hockey|volleyball|voleibol|sportv|gol tv|tyc sports|win sports|teledeporte|liga mx|champions)\b/i;
 
 function response(data, status = 200) {
@@ -129,7 +133,7 @@ function parseM3u(text, sourceUrl) {
         language: detectChannelLanguage(declaredLanguage, name, group),
         isSports: SPORTS_WORDS.test(name + " " + group) ? 1 : 0
       });
-      if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+      if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
     }
     metadata = null;
   }
@@ -185,7 +189,7 @@ function parsePls(text, sourceUrl) {
     if (!row.file) continue;
     const channel = channelFromPlaylistEntry(row.title || "Canal " + id, row.file, sourceUrl);
     if (channel) channels.push(channel);
-    if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
   }
   return channels;
 }
@@ -206,7 +210,7 @@ function parseXspf(text, sourceUrl) {
       logo ? decodeXmlEntities(logo[1].trim()) : ""
     );
     if (channel) channels.push(channel);
-    if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
   }
   return channels;
 }
@@ -222,7 +226,7 @@ function parseJsonPlaylist(text, sourceUrl) {
   const visited = new Set();
   const nestedKeys = ["channels", "streams", "items", "results", "data", "playlist", "entries"];
   const visit = (value, depth = 0) => {
-    if (!value || depth > 6 || channels.length >= MAX_IMPORTED_CHANNELS) return;
+    if (!value || depth > 6 || channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) return;
     if (Array.isArray(value)) {
       for (const item of value) visit(item, depth + 1);
       return;
@@ -283,7 +287,7 @@ function parsePlainTextPlaylist(text, sourceUrl) {
     }
     const channel = channelFromPlaylistEntry(name, url, sourceUrl);
     if (channel) channels.push(channel);
-    if (channels.length >= MAX_IMPORTED_CHANNELS) break;
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
   }
   return channels;
 }
@@ -308,6 +312,14 @@ export function parsePlaylist(text, sourceUrl) {
     return { format: "json", channels: parseJsonPlaylist(normalized, sourceUrl) };
   }
   return { format: "txt", channels: parsePlainTextPlaylist(normalized, sourceUrl) };
+}
+
+/** Conserva solo canales reconocidos como deportivos y limita las escrituras */
+export function selectSportsChannels(channels) {
+  if (!Array.isArray(channels)) return [];
+  return channels
+    .filter(channel => channel && channel.isSports === 1)
+    .slice(0, MAX_IMPORTED_CHANNELS);
 }
 
 async function fetchPublicPlaylist(sourceUrl) {
@@ -1040,7 +1052,15 @@ export class ChannelCatalogRoom {
   async alarm() {
     try {
       await this.refreshBatch();
-    } catch {
+    } catch (error) {
+      const message = String(error && error.message || error);
+      if (message.includes("Exceeded allowed rows written in Durable Objects free tier")) {
+        // La cuota gratuita se restablece a las 00:00 UTC. No crear otro
+        // setAlarm (también consumiría una fila escrita); el cron volverá a
+        // poner la cola en marcha en el siguiente ciclo.
+        console.error("Cuota diaria de filas escritas agotada; se reintentará en el siguiente cron.");
+        return;
+      }
       await this.state.storage.setAlarm(Date.now() + 5 * 60 * 1000);
     }
   }
@@ -1063,10 +1083,10 @@ export class ChannelCatalogRoom {
         if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista multimedia directa.");
         const text = await readTextLimited(sourceResponse);
         const parsedPlaylist = parsePlaylist(text, fetched.finalUrl);
-        const parsed = parsedPlaylist.channels;
+        const parsed = selectSportsChannels(parsedPlaylist.channels);
         if (parsed.length === 0) {
-          throw new Error("El archivo " + parsedPlaylist.format.toUpperCase() +
-            " se pudo leer, pero no contiene señales compatibles (HLS, DASH, TS o vídeo directo).");
+          throw new Error("La lista " + parsedPlaylist.format.toUpperCase() +
+            " se pudo leer, pero no contiene canales deportivos con señales directas compatibles.");
         }
         // La fuente pudo retirarse mientras se descargaba. En ese caso no se
         // añaden canales nuevos después de que el administrador la haya quitado.
@@ -1083,7 +1103,11 @@ export class ChannelCatalogRoom {
             "name = excluded.name, identifier = excluded.identifier, logo_url = excluded.logo_url, " +
             "group_title = excluded.group_title, is_sports = excluded.is_sports, " +
             "language = CASE WHEN excluded.language != 'unknown' THEN excluded.language ELSE channels.language END, " +
-            "source_url = excluded.source_url, updated_at = excluded.updated_at",
+            "updated_at = excluded.updated_at WHERE " +
+            "channels.name != excluded.name OR channels.identifier != excluded.identifier OR " +
+            "channels.logo_url != excluded.logo_url OR channels.group_title != excluded.group_title OR " +
+            "channels.is_sports != excluded.is_sports OR " +
+            "(excluded.language != 'unknown' AND channels.language != excluded.language)",
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
             channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
           );
@@ -1101,6 +1125,17 @@ export class ChannelCatalogRoom {
         });
       } catch (error) {
         const message = cleanText(error && error.message || "Error al importar la fuente.", 240);
+        if (message.includes("Exceeded allowed rows written in Durable Objects free tier")) {
+          console.error("Cuota diaria de filas escritas agotada durante la importación.");
+          results.push({ label: source.label, imported: 0, status: "quota_exhausted" });
+          return {
+            processed: results.length,
+            queued: due.length,
+            imported,
+            results,
+            quotaExhausted: true
+          };
+        }
         this.sql.exec(
           "UPDATE sources SET status = 'error', last_error = ?, next_refresh_at = ? WHERE id = ?",
           message, Date.now() + 30 * 60 * 1000, source.id
