@@ -799,7 +799,7 @@ export class ChannelCatalogRoom {
     if (path === "/auto-schedule" && request.method === "GET") {
       const saved = await this.state.storage.get("auto_live_schedule");
       if (!saved || !Array.isArray(saved.events)) {
-        return response({ status: "ok", updatedAt: null, events: [], reason: "not_generated" });
+        return response({ status: "unavailable", updatedAt: null, events: [], reason: "not_generated" });
       }
       const updatedAt = Date.parse(saved.updatedAt || "");
       const stale = !Number.isFinite(updatedAt) || Date.now() - updatedAt > 20 * 60 * 1000;
