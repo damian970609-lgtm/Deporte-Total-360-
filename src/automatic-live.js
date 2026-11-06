@@ -324,7 +324,7 @@ async function fetchProgrammes(fetchImpl) {
       try {
         // No contar una página HTML como una guía correcta: una respuesta
         // HTML con HTTP 200 no debe vaciar el calendario anterior.
-        if (!/<tv\\b/i.test(body)) continue;
+        if (!/<tv\b/i.test(body)) continue;
         programmes.push(...parseXmltv(body));
         successful++;
       } catch {
