@@ -24,7 +24,9 @@ tag = "v2-channel-catalog"
 new_sqlite_classes = ["ChannelCatalogRoom"]
 
 [triggers]
-crons = ["0 */6 * * *"]
+# Ejecuta a los cinco minutos de cada bloque de seis horas para que el
+# primer reintento tras el reinicio diario de cuotas (00:00 UTC) ocurra 00:05.
+crons = ["5 */6 * * *"]
 
 [vars]
 CHANNELS_ADMIN_EMAIL = "damian970609@gmail.com"
