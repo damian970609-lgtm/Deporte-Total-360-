@@ -58,9 +58,185 @@ jobs:
         run: |
           set -Eeuo pipefail
           BASE="https://deporte-total-360-api.damian970609.workers.dev"
-          HEALTH="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/health")"
-          CHAT="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/chat/messages")"
-          OAUTH="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/channels/auth-config")"
+          fetch_checked() {
+            local route="$1"
+            local response status body
+            response="$(curl --silent --show-error --retry 1 --retry-delay 2 --max-time 20 -w 
+          node - "$HEALTH" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" <<'NODE'
+          const health = JSON.parse(process.argv[2]);
+          const chat = JSON.parse(process.argv[3]);
+          const oauth = JSON.parse(process.argv[4]);
+          const expectedOAuthClientId = process.argv[5];
+          if (health.status !== "online") {
+            throw new Error("El endpoint /health no confirmó que el Worker está online.");
+          }
+          if (health.provider_configured !== true) {
+            throw new Error("El Worker está online, pero APISPORTS_KEY no está configurada.");
+          }
+          if (health.sportsapi_configured !== true) {
+            throw new Error("El Worker está online, pero SPORTAPI_API_KEY no está configurada.");
+          }
+          if (health.channels_google_login_configured !== true) {
+            throw new Error("Falta GOOGLE_OAUTH_CLIENT_ID en Cloudflare.");
+          }
+          if (oauth.configured !== true || oauth.clientId !== expectedOAuthClientId) {
+            throw new Error("El cliente OAuth Web desplegado en Cloudflare no coincide con el secreto del repositorio.");
+          }
+          if (!Array.isArray(chat.messages)) {
+            throw new Error("La sala pública no devolvió una lista de mensajes.");
+          }
+          console.log("Worker online; proveedor y OAuth configurados; sala pública accesible; mensajes:", chat.messages.length);
+          NODE
+
+          CATALOG="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/sports")"
+          node - "$CATALOG" "$BASE" <<'NODE'
+          (async () => {
+            const catalog = JSON.parse(process.argv[2]);
+            if (!Array.isArray(catalog.sports)) {
+              throw new Error("El catálogo no devolvió sports[].");
+            }
+            const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
+            const available = new Set(catalog.sports.map((sport) => sport.id));
+            const missing = required.filter((id) => !available.has(id));
+            if (missing.length) {
+              throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
+            }
+            console.log("Catálogo API-Sports disponible; deportes configurados:", catalog.sports.length);
+            const favoritesResponse = await fetch(process.argv[3] + "/api/sportsapi/favorites");
+            if (!favoritesResponse.ok) throw new Error("No se pudo consultar el catálogo de favoritos SportsAPI.app.");
+            const favorites = await favoritesResponse.json();
+            if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) {
+              throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
+            }
+            console.log("Catálogo SportsAPI.app disponible; deportes favoritos:", favorites.sports.length);
+            console.log("No se consultó el proveedor deportivo durante el despliegue para no consumir la cuota por minuto.");
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+\\n%{http_code}' "$BASE$route")"
+            status="${response##*
+          node - "$HEALTH" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" <<'NODE'
+          const health = JSON.parse(process.argv[2]);
+          const chat = JSON.parse(process.argv[3]);
+          const oauth = JSON.parse(process.argv[4]);
+          const expectedOAuthClientId = process.argv[5];
+          if (health.status !== "online") {
+            throw new Error("El endpoint /health no confirmó que el Worker está online.");
+          }
+          if (health.provider_configured !== true) {
+            throw new Error("El Worker está online, pero APISPORTS_KEY no está configurada.");
+          }
+          if (health.sportsapi_configured !== true) {
+            throw new Error("El Worker está online, pero SPORTAPI_API_KEY no está configurada.");
+          }
+          if (health.channels_google_login_configured !== true) {
+            throw new Error("Falta GOOGLE_OAUTH_CLIENT_ID en Cloudflare.");
+          }
+          if (oauth.configured !== true || oauth.clientId !== expectedOAuthClientId) {
+            throw new Error("El cliente OAuth Web desplegado en Cloudflare no coincide con el secreto del repositorio.");
+          }
+          if (!Array.isArray(chat.messages)) {
+            throw new Error("La sala pública no devolvió una lista de mensajes.");
+          }
+          console.log("Worker online; proveedor y OAuth configurados; sala pública accesible; mensajes:", chat.messages.length);
+          NODE
+
+          CATALOG="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/sports")"
+          node - "$CATALOG" "$BASE" <<'NODE'
+          (async () => {
+            const catalog = JSON.parse(process.argv[2]);
+            if (!Array.isArray(catalog.sports)) {
+              throw new Error("El catálogo no devolvió sports[].");
+            }
+            const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
+            const available = new Set(catalog.sports.map((sport) => sport.id));
+            const missing = required.filter((id) => !available.has(id));
+            if (missing.length) {
+              throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
+            }
+            console.log("Catálogo API-Sports disponible; deportes configurados:", catalog.sports.length);
+            const favoritesResponse = await fetch(process.argv[3] + "/api/sportsapi/favorites");
+            if (!favoritesResponse.ok) throw new Error("No se pudo consultar el catálogo de favoritos SportsAPI.app.");
+            const favorites = await favoritesResponse.json();
+            if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) {
+              throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
+            }
+            console.log("Catálogo SportsAPI.app disponible; deportes favoritos:", favorites.sports.length);
+            console.log("No se consultó el proveedor deportivo durante el despliegue para no consumir la cuota por minuto.");
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+\\n'}"
+            body="${response%
+          node - "$HEALTH" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" <<'NODE'
+          const health = JSON.parse(process.argv[2]);
+          const chat = JSON.parse(process.argv[3]);
+          const oauth = JSON.parse(process.argv[4]);
+          const expectedOAuthClientId = process.argv[5];
+          if (health.status !== "online") {
+            throw new Error("El endpoint /health no confirmó que el Worker está online.");
+          }
+          if (health.provider_configured !== true) {
+            throw new Error("El Worker está online, pero APISPORTS_KEY no está configurada.");
+          }
+          if (health.sportsapi_configured !== true) {
+            throw new Error("El Worker está online, pero SPORTAPI_API_KEY no está configurada.");
+          }
+          if (health.channels_google_login_configured !== true) {
+            throw new Error("Falta GOOGLE_OAUTH_CLIENT_ID en Cloudflare.");
+          }
+          if (oauth.configured !== true || oauth.clientId !== expectedOAuthClientId) {
+            throw new Error("El cliente OAuth Web desplegado en Cloudflare no coincide con el secreto del repositorio.");
+          }
+          if (!Array.isArray(chat.messages)) {
+            throw new Error("La sala pública no devolvió una lista de mensajes.");
+          }
+          console.log("Worker online; proveedor y OAuth configurados; sala pública accesible; mensajes:", chat.messages.length);
+          NODE
+
+          CATALOG="$(curl --fail --silent --show-error --retry 3 --retry-delay 2 "$BASE/api/sports")"
+          node - "$CATALOG" "$BASE" <<'NODE'
+          (async () => {
+            const catalog = JSON.parse(process.argv[2]);
+            if (!Array.isArray(catalog.sports)) {
+              throw new Error("El catálogo no devolvió sports[].");
+            }
+            const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
+            const available = new Set(catalog.sports.map((sport) => sport.id));
+            const missing = required.filter((id) => !available.has(id));
+            if (missing.length) {
+              throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
+            }
+            console.log("Catálogo API-Sports disponible; deportes configurados:", catalog.sports.length);
+            const favoritesResponse = await fetch(process.argv[3] + "/api/sportsapi/favorites");
+            if (!favoritesResponse.ok) throw new Error("No se pudo consultar el catálogo de favoritos SportsAPI.app.");
+            const favorites = await favoritesResponse.json();
+            if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) {
+              throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
+            }
+            console.log("Catálogo SportsAPI.app disponible; deportes favoritos:", favorites.sports.length);
+            console.log("No se consultó el proveedor deportivo durante el despliegue para no consumir la cuota por minuto.");
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+\\n'*}"
+            if [[ "$status" != "200" ]]; then
+              echo "::error::La ruta $route respondió HTTP $status."
+              echo "Respuesta: ${body:0:1800}"
+              return 1
+            fi
+            printf '%s' "$body"
+          }
+
+          HEALTH="$(fetch_checked "/health")"
+          CHAT="$(fetch_checked "/api/chat/messages")"
+          OAUTH="$(fetch_checked "/api/channels/auth-config")"
           node - "$HEALTH" "$CHAT" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" <<'NODE'
           const health = JSON.parse(process.argv[2]);
           const chat = JSON.parse(process.argv[3]);
