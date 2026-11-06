@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, isChannelSuppressed, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, isChannelSuppressed, parsePlaylist, selectSportsChannels, syncFavoriteRows } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -989,4 +989,85 @@ test("el bloqueo persistente usa la URL para impedir reimportar un canal elimina
   assert.equal(isChannelSuppressed(sql, blockedUrl), true);
   assert.equal(isChannelSuppressed(sql, "https://media.example/other.m3u8"), false);
   assert.match(queried[0].statement, /blocked_channels WHERE stream_url = \?/);
+});
+
+
+test("el catálogo público usa caché de borde y evita consultas repetidas al Durable Object", async () => {
+  const cacheEntries = installCache();
+  let calls = 0;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName: () => "catalog",
+      get: () => ({
+        async fetch() {
+          calls += 1;
+          return new Response(JSON.stringify({
+            configured: true,
+            total: 1,
+            offset: 0,
+            hasMore: false,
+            channels: [{
+              id: "sports-1",
+              identifier: "sports-1",
+              name: "Sports One",
+              stream_url: "https://media.example/live.m3u8",
+              url: "https://media.example/live.m3u8",
+              is_sports: 1,
+              visible: 1,
+              language: "en"
+            }]
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+      })
+    }
+  };
+
+  const first = await worker.fetch(request("/api/channels?offset=0&limit=200"), env);
+  const second = await worker.fetch(request("/api/channels?offset=0&limit=200"), env);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("Cache-Control"), "public, max-age=60");
+  assert.equal(second.status, 200);
+  assert.equal(second.headers.get("X-Data-Source"), "cache");
+  assert.equal(calls, 1);
+  assert.equal(cacheEntries.size, 1);
+});
+
+test("sincronizar favoritos añade antes de borrar y conserva los anteriores si falla una escritura", () => {
+  const initial = new Set(["keep-me", "remove-me"]);
+  const visibleChannels = new Set(["keep-me", "remove-me", "new-one"]);
+  const operations = [];
+  let failInsert = true;
+  const sql = {
+    exec(statement, ...args) {
+      operations.push(statement);
+      if (statement.startsWith("SELECT channel_id FROM favorites")) {
+        return Array.from(initial, channel_id => ({ channel_id }));
+      }
+      if (statement.startsWith("INSERT OR IGNORE INTO favorites")) {
+        if (failInsert) throw new Error("Exceeded allowed rows written in Durable Objects free tier");
+        const channelId = args[2];
+        if (visibleChannels.has(channelId)) initial.add(channelId);
+        return [];
+      }
+      if (statement.startsWith("DELETE FROM favorites WHERE user_sub = ? AND channel_id = ?")) {
+        initial.delete(args[1]);
+        return [];
+      }
+      throw new Error("SQL inesperado: " + statement);
+    }
+  };
+
+  assert.throws(
+    () => syncFavoriteRows(sql, "user-1", ["keep-me", "new-one"]),
+    /Exceeded allowed rows written/
+  );
+  assert.deepEqual(Array.from(initial).sort(), ["keep-me", "remove-me"]);
+  assert.equal(operations.some(statement => statement.startsWith("DELETE FROM favorites")), false);
+
+  failInsert = false;
+  operations.length = 0;
+  const result = syncFavoriteRows(sql, "user-1", ["keep-me", "new-one"]);
+  assert.deepEqual(Array.from(initial).sort(), ["keep-me", "new-one"]);
+  assert.equal(result.added, 1);
+  assert.equal(result.removed, 1);
 });
