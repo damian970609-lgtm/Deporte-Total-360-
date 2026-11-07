@@ -30,7 +30,7 @@ const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
 const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
 const MAX_IMPORTED_CHANNELS = 50000;
 const MAX_SOURCE_COUNT = 100;
-const IMPORT_CHANNEL_BATCH_SIZE = 250;
+const IMPORT_CHANNEL_BATCH_SIZE = 1000;
 const REFRESH_BATCH_SIZE = 2;
 // Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
 // escribir de nuevo miles de filas idénticas en el plan gratuito.
