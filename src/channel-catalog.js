@@ -1,6 +1,6 @@
 const JSON_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "Cache-Control": "no-store",
@@ -652,6 +652,12 @@ export class ChannelCatalogRoom {
       "source_url TEXT NOT NULL, updated_at TEXT NOT NULL)"
     );
     this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS blocked_channels (" +
+      "stream_url TEXT PRIMARY KEY, channel_id TEXT NOT NULL, " +
+      "identifier TEXT NOT NULL, name TEXT NOT NULL, blocked_at TEXT NOT NULL)"
+    );
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_blocked_channels_id ON blocked_channels(channel_id)");
+    this.sql.exec(
       "CREATE TABLE IF NOT EXISTS channel_catalog_schema_migrations (" +
       "version INTEGER PRIMARY KEY)"
     );
@@ -965,6 +971,28 @@ export class ChannelCatalogRoom {
       });
     }
 
+    const channelRemoval = path.match(/^\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+    if (channelRemoval && request.method === "DELETE") {
+      const channel = Array.from(this.sql.exec(
+        "SELECT id, identifier, name, stream_url FROM channels WHERE id = ?",
+        channelRemoval[1]
+      ))[0];
+      if (!channel) return response({ error: "Canal no encontrado." }, 404);
+      const blockedAt = new Date().toISOString();
+      this.sql.exec(
+        "INSERT OR IGNORE INTO blocked_channels (stream_url, channel_id, identifier, name, blocked_at) VALUES (?, ?, ?, ?, ?)",
+        channel.stream_url, channel.id, channel.identifier, channel.name, blockedAt
+      );
+      this.sql.exec("DELETE FROM favorites WHERE channel_id = ?", channel.id);
+      this.sql.exec("DELETE FROM channels WHERE id = ?", channel.id);
+      return response({
+        deleted: true,
+        id: channel.id,
+        identifier: channel.identifier,
+        blockedFromReimport: true
+      });
+    }
+
     if (path === "/refresh" && request.method === "POST") {
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({
@@ -1080,6 +1108,10 @@ export class ChannelCatalogRoom {
     const results = [];
     for (const source of due) {
       try {
+        this.sql.exec(
+          "UPDATE sources SET status = 'importing', last_error = '' WHERE id = ?",
+          source.id
+        );
         if (!validPublicHttpsUrl(source.url)) throw new Error("La fuente no es una URL HTTPS pública.");
         const fetched = await fetchPublicPlaylist(source.url);
         const sourceResponse = fetched.response;
@@ -1100,7 +1132,13 @@ export class ChannelCatalogRoom {
         ))[0];
         if (!stillRegistered) continue;
         const timestamp = new Date().toISOString();
+        let sourceImported = 0;
         for (const channel of parsed) {
+          const blocked = Array.from(this.sql.exec(
+            "SELECT stream_url FROM blocked_channels WHERE stream_url = ?",
+            channel.url
+          ))[0];
+          if (blocked) continue;
           const identifier = await identifierFor(channel.name, channel.url);
           this.sql.exec(
             "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
@@ -1116,11 +1154,12 @@ export class ChannelCatalogRoom {
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
             channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
           );
+          sourceImported += 1;
         }
-        imported += parsed.length;
+        imported += sourceImported;
         this.sql.exec(
           "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
-          parsedPlaylist.format, timestamp, parsed.length, Date.now() + REFRESH_INTERVAL_MS, source.id
+          parsedPlaylist.format, timestamp, sourceImported, Date.now() + REFRESH_INTERVAL_MS, source.id
         );
         results.push({
           label: source.label,
