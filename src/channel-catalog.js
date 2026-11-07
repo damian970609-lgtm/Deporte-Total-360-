@@ -462,7 +462,7 @@ async function readTextLimited(sourceResponse) {
     size += item.value.byteLength;
     if (size > MAX_PLAYLIST_BYTES) {
       await reader.cancel();
-      throw new Error("La lista supera el límite de 12 MB.");
+      throw new Error("La lista supera el límite de 25 MB.");
     }
     chunks.push(item.value);
   }
