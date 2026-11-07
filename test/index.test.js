@@ -622,6 +622,43 @@ test("el limitador global reserva una ranura por consulta y mantiene el interval
   assert.ok((await second.json()).waitMs >= 6000);
 });
 
+test("el proxy reserva una ranura global antes de consultar SportsAPI", async () => {
+  let reservations = 0;
+  let capturedUrl;
+  globalThis.fetch = async url => {
+    capturedUrl = new URL(url);
+    return new Response(JSON.stringify({ data: [], meta: { count: 0 } }), {
+      status: 200
+    });
+  };
+  const env = {
+    SPORTAPI_API_KEY: "test",
+    SPORTSAPI_RATE_LIMITER: {
+      idFromName(name) {
+        assert.equal(name, "sportsapi-account-free");
+        return "sportsapi-account-free";
+      },
+      get(id) {
+        assert.equal(id, "sportsapi-account-free");
+        return {
+          async fetch(url) {
+            reservations++;
+            assert.equal(url, "https://sportsapi-rate-limiter.internal/acquire");
+            return new Response(JSON.stringify({ waitMs: 0 }), { status: 200 });
+          }
+        };
+      }
+    }
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&page=0"),
+    env
+  );
+  assert.equal(response.status, 200);
+  assert.equal(reservations, 1);
+  assert.equal(capturedUrl.pathname, "/v2/fixtures");
+});
+
 test("proxy SportsAPI.app admite resultados de carreras con sesión", async () => {
   let capturedUrl;
   globalThis.fetch = async url => {
