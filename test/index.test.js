@@ -621,7 +621,7 @@ test("el catálogo público reenvía búsqueda, offset y tamaño de página", as
             return new Response(JSON.stringify({
               configured: true,
               channels: [],
-              offset: 200,
+              offset: 250000,
               hasMore: false
             }), {
               status: 200,
@@ -634,17 +634,17 @@ test("el catálogo público reenvía búsqueda, offset y tamaño de página", as
   };
 
   const response = await worker.fetch(
-    request("/api/channels?offset=200&q=ESPN&limit=1500"), env
+    request("/api/channels?offset=250000&q=ESPN&limit=1500"), env
   );
   const body = await response.json();
 
   assert.equal(response.status, 200);
   assert.equal(capturedUrl.pathname, "/catalog");
   assert.equal(capturedUrl.searchParams.get("scope"), "public");
-  assert.equal(capturedUrl.searchParams.get("offset"), "200");
+  assert.equal(capturedUrl.searchParams.get("offset"), "250000");
   assert.equal(capturedUrl.searchParams.get("limit"), "1500");
   assert.equal(capturedUrl.searchParams.get("q"), "ESPN");
-  assert.equal(body.offset, 200);
+  assert.equal(body.offset, 250000);
 });
 
 
