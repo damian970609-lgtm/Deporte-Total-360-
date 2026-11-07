@@ -118,9 +118,15 @@ puede enviar `refresh=1` para saltarse la caché del proxy durante una actualiza
 manual; esa instrucción nunca se reenvía a SportsAPI. La Agenda sigue las páginas
 indicadas por `meta.hasNextPage`, tanto en encuentros como en carreras. La
 cobertura depende de los deportes, competiciones y plan contratados al proveedor.
-La lista favorita es la configuración deseada, no una garantía de que cada
-torneo tenga fixtures publicados en el proveedor.
-El Worker aplica una lista permitida de competiciones en las respuestas diarias de partidos y carreras. Se excluyen las ligas y carreras no seleccionadas antes de entregar la agenda a la APK. En ciclismo, se filtra por el nombre de cada carrera, porque la serie del proveedor agrupa únicamente el calendario masculino o femenino.
+El catálogo de diez deportes y competiciones se define en `FAVORITE_SPORTS`
+y se publica junto con los alias de nombres en `competitionAliases`. Es una
+configuración global del proyecto: cada instalación recibe ese catálogo; no es
+un perfil independiente por cuenta. La APK aplica el filtro de las competiciones
+seleccionadas y vuelve a validar las respuestas antes de mostrarlas. SportsAPI
+puede no publicar encuentros para todos los torneos o fechas, y la cobertura
+depende del plan contratado. En ciclismo, la APK filtra por el nombre de cada
+carrera, porque la serie del proveedor puede agrupar calendarios masculinos y
+femeninos.
 
 Para desplegar, agrega SPORTAPI_API_KEY como GitHub Actions secret del
 repositorio del Worker. El workflow lo instala en Cloudflare como secreto y
