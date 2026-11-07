@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
+import { ChannelCatalogRoom, detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -78,6 +78,47 @@ test("el cron programa solo las fuentes vencidas del catálogo", async () => {
   assert.equal(requestedPath, "/scheduled-refresh");
   assert.ok(waited);
   assert.equal((await waited).status, 202);
+});
+
+test("el refresco programado solo activa un lote cuando hay fuentes vencidas", async () => {
+  const alarms = [];
+  let initialization;
+  const state = {
+    storage: {
+      sql: {
+        exec(query) {
+          if (query.includes("SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?")) {
+            return [{ total: 3 }];
+          }
+          return [];
+        }
+      },
+      async setAlarm(timestamp) {
+        alarms.push(timestamp);
+      }
+    },
+    blockConcurrencyWhile(callback) {
+      initialization = callback();
+      return initialization;
+    }
+  };
+  const room = new ChannelCatalogRoom(state, {});
+  await initialization;
+  const previousAlarmCount = alarms.length;
+
+  const response = await room.fetch(new Request(
+    "https://channel-catalog.internal/scheduled-refresh",
+    { method: "POST" }
+  ));
+  const body = await response.json();
+
+  assert.equal(response.status, 202);
+  assert.deepEqual(body, {
+    queued: true,
+    due: 3,
+    message: "Se programaron solo las fuentes cuyo intervalo de actualización venció."
+  });
+  assert.equal(alarms.length, previousAlarmCount + 1);
 });
 
 test("catálogo en vivo devuelve vacío cuando no está configurado", async () => {
