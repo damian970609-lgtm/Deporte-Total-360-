@@ -1251,10 +1251,17 @@ export class ChannelCatalogRoom {
     }
 
     if (path === "/refresh" && request.method === "POST") {
+      this.sql.exec(
+        "UPDATE sources SET status = 'queued', imported_count = 0, import_offset = 0, next_refresh_at = 0 " +
+        "WHERE status != 'importing'"
+      );
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({
         queued: true,
-        message: "La actualización se ejecutará en segundo plano por lotes."
+        total: Number(Array.from(this.sql.exec(
+          "SELECT COUNT(*) AS total FROM sources"
+        ))[0]?.total || 0),
+        message: "Las fuentes se actualizarán en segundo plano por lotes."
       }, 202);
     }
 
