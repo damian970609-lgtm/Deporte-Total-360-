@@ -588,6 +588,22 @@ export async function handleChannelRoutes(request, env, path) {
     return callCatalog(env, "/sources", "POST", { url, label });
   }
 
+  const sourceUpdate = path.match(/^\/api\/channels\/admin\/sources\/([a-zA-Z0-9_-]{1,100})$/);
+  if (sourceUpdate && method === "PUT") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    const url = String(payload && payload.url || "").trim();
+    const label = cleanText(payload && payload.label || "Lista IPTV", 80);
+    if (!validPublicHttpsUrl(url)) {
+      return response({ error: "Usa una URL HTTPS pública, sin credenciales ni direcciones locales." }, 400);
+    }
+    return callCatalog(env, "/sources/" + encodeURIComponent(sourceUpdate[1]), "PUT", {
+      url, label
+    });
+  }
+
   const sourceRetry = path.match(/^\/api\/channels\/admin\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
   if (sourceRetry && method === "POST") {
     return callCatalog(env, "/sources/" + encodeURIComponent(sourceRetry[1]) + "/retry", "POST", {});
@@ -944,6 +960,36 @@ export class ChannelCatalogRoom {
       );
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano." }, 202);
+    }
+
+    const sourceUpdate = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})$/);
+    if (sourceUpdate && request.method === "PUT") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const sourceUrl = String(payload && payload.url || "").trim();
+      const label = cleanText(payload && payload.label || "Lista IPTV", 80);
+      if (!validPublicHttpsUrl(sourceUrl)) {
+        return response({ error: "URL HTTPS pública no válida." }, 400);
+      }
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM sources WHERE id = ?", sourceUpdate[1]
+      ))[0];
+      if (!existing) return response({ error: "La lista ya no está registrada." }, 404);
+      const duplicate = Array.from(this.sql.exec(
+        "SELECT id FROM sources WHERE url = ? AND id != ?",
+        sourceUrl, sourceUpdate[1]
+      ))[0];
+      if (duplicate) {
+        return response({ error: "Otra lista ya utiliza esa URL." }, 409);
+      }
+      this.sql.exec(
+        "UPDATE sources SET url = ?, label = ?, status = 'queued', format = '', last_error = '', imported_count = 0, next_refresh_at = 0 WHERE id = ?",
+        sourceUrl, label, sourceUpdate[1]
+      );
+      await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({ updated: true, id: sourceUpdate[1], status: "queued" }, 200);
     }
 
     const sourceRetry = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
