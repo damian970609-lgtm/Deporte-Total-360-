@@ -48,6 +48,38 @@ test("health responde sin clave de proveedor", async () => {
 });
 
 
+test("el cron programa solo las fuentes vencidas del catálogo", async () => {
+  let requestedPath = "";
+  let waited;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return {
+          fetch(internalRequest) {
+            requestedPath = new URL(internalRequest.url).pathname;
+            return Promise.resolve(new Response(JSON.stringify({ queued: true, due: 3 }), {
+              status: 202,
+              headers: { "Content-Type": "application/json" }
+            }));
+          }
+        };
+      }
+    }
+  };
+  worker.scheduled({}, env, {
+    waitUntil(promise) {
+      waited = promise;
+    }
+  });
+  assert.equal(requestedPath, "/scheduled-refresh");
+  assert.ok(waited);
+  assert.equal((await waited).status, 202);
+});
+
 test("catálogo en vivo devuelve vacío cuando no está configurado", async () => {
   const response = await worker.fetch(request("/api/live/sources"), {});
   const body = await response.json();
