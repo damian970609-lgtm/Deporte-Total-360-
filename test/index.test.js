@@ -840,6 +840,74 @@ test("el panel admin puede retirar una fuente y reintentarla con sesión Google 
   }
 });
 
+test("el administrador puede corregir la clasificación deportiva de un canal", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname,
+              body: await internalRequest.json()
+            });
+            return new Response(JSON.stringify({
+              updated: true,
+              isSports: true,
+              visible: false
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+        })
+      }
+    };
+    const classificationRequest = new Request(
+      "https://worker.example/api/channels/admin/channels/channel-123/classification",
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: "Bearer signed-google-id-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ isSports: true })
+      }
+    );
+    const result = await handleChannelRoutes(
+      classificationRequest, env, new URL(classificationRequest.url).pathname
+    );
+    assert.equal(result.status, 200);
+    assert.deepEqual(await result.json(), {
+      updated: true,
+      isSports: true,
+      visible: false
+    });
+    assert.deepEqual(forwarded, [{
+      method: "PATCH",
+      path: "/classification/channel-123",
+      body: { isSports: true }
+    }]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("el panel admin puede eliminar un canal y rechaza cuentas que no son propietarias", async () => {
   const previousFetch = globalThis.fetch;
   const forwarded = [];
