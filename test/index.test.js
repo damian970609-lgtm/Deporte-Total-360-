@@ -840,6 +840,71 @@ test("el panel admin puede retirar una fuente y reintentarla con sesión Google 
   }
 });
 
+test("el panel admin puede eliminar un canal y rechaza cuentas que no son propietarias", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  let identityEmail = "admin@example.com";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: identityEmail,
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname
+            });
+            return new Response(JSON.stringify({
+              deleted: true,
+              blockedFromReimport: true
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+        })
+      }
+    };
+    const headers = { Authorization: "Bearer signed-google-id-token" };
+    const removeRequest = new Request(
+      "https://worker.example/api/channels/admin/channels/channel-123",
+      { method: "DELETE", headers }
+    );
+    const removed = await handleChannelRoutes(
+      removeRequest, env, new URL(removeRequest.url).pathname
+    );
+    assert.equal(removed.status, 200);
+    assert.deepEqual(await removed.json(), {
+      deleted: true,
+      blockedFromReimport: true
+    });
+
+    identityEmail = "other@example.com";
+    const denied = await handleChannelRoutes(
+      removeRequest, env, new URL(removeRequest.url).pathname
+    );
+    assert.equal(denied.status, 403);
+    assert.deepEqual(forwarded, [
+      { method: "DELETE", path: "/channels/channel-123" }
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+
 
 test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {
   const base = "https://lists.example/source.txt";
