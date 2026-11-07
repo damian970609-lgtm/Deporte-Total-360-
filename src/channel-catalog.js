@@ -760,6 +760,20 @@ export async function handleChannelRoutes(request, env, path) {
     });
   }
 
+  const classification = path.match(/^\\/api\\/channels\\/admin\\/channels\\/([a-zA-Z0-9_-]{1,100})\\/classification$/);
+  if (classification && method === "PATCH") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    if (typeof (payload && payload.isSports) !== "boolean") {
+      return response({ error: "La clasificación deportiva debe ser verdadera o falsa." }, 400);
+    }
+    return callCatalog(env, "/classification/" + encodeURIComponent(classification[1]), "PATCH", {
+      isSports: payload.isSports
+    });
+  }
+
   const channelRemoval = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})$/);
   if (channelRemoval && method === "DELETE") {
     return callCatalog(env, "/channels/" + encodeURIComponent(channelRemoval[1]), "DELETE");
@@ -1284,6 +1298,36 @@ export class ChannelCatalogRoom {
       this.sql.exec("UPDATE channels SET visible = ?, updated_at = ? WHERE id = ?",
         visible ? 1 : 0, new Date().toISOString(), visibility[1]);
       return response({ updated: true, visible });
+    }
+
+    const classification = path.match(/^\\/classification\\/([a-zA-Z0-9_-]{1,100})$/);
+    if (classification && request.method === "PATCH") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      if (typeof (payload && payload.isSports) !== "boolean") {
+        return response({ error: "La clasificación deportiva debe ser verdadera o falsa." }, 400);
+      }
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM channels WHERE id = ?",
+        classification[1]
+      ))[0];
+      if (!existing) return response({ error: "Canal no encontrado." }, 404);
+      const isSports = payload.isSports;
+      this.sql.exec(
+        "UPDATE channels SET is_sports = ?, visible = CASE WHEN ? = 0 THEN 0 ELSE visible END, updated_at = ? WHERE id = ?",
+        isSports ? 1 : 0, isSports ? 1 : 0, new Date().toISOString(), classification[1]
+      );
+      const row = Array.from(this.sql.exec(
+        "SELECT visible FROM channels WHERE id = ?",
+        classification[1]
+      ))[0];
+      return response({
+        updated: true,
+        isSports,
+        visible: Boolean(row && row.visible)
+      });
     }
 
     const languagePrefix = "/language/";
