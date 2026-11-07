@@ -76,18 +76,25 @@ test("guarda mensajes, conserva la identidad privada y no expone el ID Google", 
 
 test("el alias queda asociado a la cuenta y no se puede suplantar cambiándolo", async () => {
   const { room } = makeRoom();
-  const first = await room.fetch(chatRequest("POST", {
-    name: "JugadorUno",
-    text: "Primer mensaje"
-  }, "buyer-unique"));
-  const second = await room.fetch(chatRequest("POST", {
-    name: "Administrador",
-    text: "Segundo mensaje"
-  }, "buyer-unique"));
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow();
+    const first = await room.fetch(chatRequest("POST", {
+      name: "JugadorUno",
+      text: "Primer mensaje"
+    }, "buyer-unique"));
+    Date.now = () => originalNow() + 3000;
+    const second = await room.fetch(chatRequest("POST", {
+      name: "Administrador",
+      text: "Segundo mensaje"
+    }, "buyer-unique"));
 
-  assert.equal(first.status, 201);
-  // El segundo envío se limita por frecuencia antes de aceptar el texto.
-  assert.equal(second.status, 429);
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.equal((await second.json()).message.name, "JugadorUno");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("limita mensajes repetidos por cuenta, no por dirección IP", async () => {
