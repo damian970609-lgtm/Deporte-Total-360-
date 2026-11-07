@@ -1268,7 +1268,7 @@ export class ChannelCatalogRoom {
 
   async refreshBatch() {
     const due = Array.from(this.sql.exec(
-      "SELECT id, url, label FROM sources WHERE next_refresh_at <= ? " +
+      "SELECT id, url, label, status, imported_count, import_offset FROM sources WHERE next_refresh_at <= ? " +
       "ORDER BY next_refresh_at ASC, label COLLATE NOCASE LIMIT ?",
       Date.now(), REFRESH_BATCH_SIZE
     ));
@@ -1276,9 +1276,12 @@ export class ChannelCatalogRoom {
     const results = [];
     for (const source of due) {
       try {
+        const isContinuing = source.status === "importing";
+        const offset = isContinuing ? Number(source.import_offset || 0) : 0;
+        const importedBefore = isContinuing ? Number(source.imported_count || 0) : 0;
         this.sql.exec(
-          "UPDATE sources SET status = 'importing', last_error = '' WHERE id = ?",
-          source.id
+          "UPDATE sources SET status = 'importing', last_error = '', import_offset = ?, imported_count = ? WHERE id = ?",
+          offset, importedBefore, source.id
         );
         if (!validPublicHttpsUrl(source.url)) throw new Error("La fuente no es una URL HTTPS pública.");
         const fetched = await fetchPublicPlaylist(source.url);
@@ -1288,10 +1291,10 @@ export class ChannelCatalogRoom {
         if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista multimedia directa.");
         const text = await readTextLimited(sourceResponse);
         const parsedPlaylist = parsePlaylist(text, fetched.finalUrl);
-        const parsed = selectSportsChannels(parsedPlaylist.channels);
+        const parsed = selectAllChannels(parsedPlaylist.channels);
         if (parsed.length === 0) {
           throw new Error("La lista " + parsedPlaylist.format.toUpperCase() +
-            " se pudo leer, pero no contiene canales deportivos con señales directas compatibles.");
+            " no contiene canales con URLs multimedia directas compatibles.");
         }
         // La fuente pudo retirarse mientras se descargaba. En ese caso no se
         // añaden canales nuevos después de que el administrador la haya quitado.
@@ -1299,9 +1302,11 @@ export class ChannelCatalogRoom {
           "SELECT id FROM sources WHERE id = ?", source.id
         ))[0];
         if (!stillRegistered) continue;
+
         const timestamp = new Date().toISOString();
+        const batch = parsed.slice(offset, offset + IMPORT_CHANNEL_BATCH_SIZE);
         let sourceImported = 0;
-        for (const channel of parsed) {
+        for (const channel of batch) {
           const blocked = Array.from(this.sql.exec(
             "SELECT stream_url FROM blocked_channels WHERE stream_url = ?",
             channel.url
@@ -1320,21 +1325,38 @@ export class ChannelCatalogRoom {
             "channels.is_sports != excluded.is_sports OR " +
             "(excluded.language != 'unknown' AND channels.language != excluded.language)",
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
-            channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
+            channel.groupTitle, channel.isSports ? 1 : 0, channel.language, source.url, timestamp
           );
           sourceImported += 1;
         }
+
+        const nextOffset = offset + batch.length;
+        const totalImported = importedBefore + sourceImported;
         imported += sourceImported;
-        this.sql.exec(
-          "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
-          parsedPlaylist.format, timestamp, sourceImported, Date.now() + REFRESH_INTERVAL_MS, source.id
-        );
-        results.push({
-          label: source.label,
-          imported: parsed.length,
-          format: parsedPlaylist.format,
-          status: "ok"
-        });
+        if (nextOffset < parsed.length) {
+          this.sql.exec(
+            "UPDATE sources SET status = 'importing', format = ?, last_error = '', imported_count = ?, import_offset = ?, next_refresh_at = ? WHERE id = ?",
+            parsedPlaylist.format, totalImported, nextOffset, Date.now() + 2000, source.id
+          );
+          results.push({
+            label: source.label,
+            imported: totalImported,
+            totalChannels: parsed.length,
+            status: "importing"
+          });
+        } else {
+          this.sql.exec(
+            "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, import_offset = 0, next_refresh_at = ? WHERE id = ?",
+            parsedPlaylist.format, timestamp, totalImported, Date.now() + REFRESH_INTERVAL_MS, source.id
+          );
+          results.push({
+            label: source.label,
+            imported: totalImported,
+            totalChannels: parsed.length,
+            format: parsedPlaylist.format,
+            status: "ok"
+          });
+        }
       } catch (error) {
         const message = cleanText(error && error.message || "Error al importar la fuente.", 240);
         if (message.includes("Exceeded allowed rows written in Durable Objects free tier")) {
@@ -1349,7 +1371,7 @@ export class ChannelCatalogRoom {
           };
         }
         this.sql.exec(
-          "UPDATE sources SET status = 'error', last_error = ?, next_refresh_at = ? WHERE id = ?",
+          "UPDATE sources SET status = 'error', last_error = ?, import_offset = 0, next_refresh_at = ? WHERE id = ?",
           message, Date.now() + 30 * 60 * 1000, source.id
         );
         results.push({ label: source.label, imported: 0, status: "error", error: message });
@@ -1365,8 +1387,6 @@ export class ChannelCatalogRoom {
     ));
     const hasPending = Number(pendingRows[0] && pendingRows[0].total || 0) > 0;
     if (hasPending) {
-      // Continúa pronto con el siguiente lote; evita dejar listas esperando
-      // un minuto entre cada grupo de tres fuentes.
       await this.state.storage.setAlarm(Date.now() + 2000);
     } else if (nextAt > 0) {
       await this.state.storage.setAlarm(nextAt);
