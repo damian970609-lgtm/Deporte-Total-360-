@@ -1050,6 +1050,31 @@ function liveSourcesResponse(request, env) {
 // Proxy seguro de SportsAPI.app: la clave solo vive en Cloudflare Secrets.
 const SPORTSAPI_BASE = "https://api.sportsapi.app/v2";
 const SPORTSAPI_SLUGS = new Set(["football","basketball","baseball","ice-hockey","volleyball","mma","futsal","cycling","motorsport","handball"]);
+let sportsApiLocalNextAllowedAt = 0;
+let sportsApiLocalReservationQueue = Promise.resolve();
+
+async function reserveSportsApiRequestSlot(env) {
+  let waitMs;
+  if (env.SPORTSAPI_RATE_LIMITER) {
+    const id = env.SPORTSAPI_RATE_LIMITER.idFromName("sportsapi-account-global");
+    const stub = env.SPORTSAPI_RATE_LIMITER.get(id);
+    const response = await stub.fetch("https://sportsapi-rate-limiter.internal/reserve");
+    if (!response.ok) throw new Error("SportsAPI rate limiter is unavailable.");
+    const reservation = await response.json();
+    waitMs = Math.max(0, Number(reservation.waitMs) || 0);
+  } else {
+    // Fallback conservador si el Durable Object aún no está enlazado.
+    const reservation = sportsApiLocalReservationQueue.then(async () => {
+      const now = Date.now();
+      const slot = Math.max(now, sportsApiLocalNextAllowedAt);
+      sportsApiLocalNextAllowedAt = slot + 6200;
+      return Math.max(0, slot - now);
+    });
+    sportsApiLocalReservationQueue = reservation.then(() => undefined, () => undefined);
+    waitMs = await reservation;
+  }
+  if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+}
 const FAVORITE_SPORTS = [
   {
     id: "football",
@@ -1232,11 +1257,34 @@ function matchFavoriteCompetition(sportId, providerName) {
   const target = normalizeFavoriteCompetition(providerName);
   if (!target) return null;
 
+  const comparable = value => {
+    let normalized = normalizeFavoriteCompetition(value).replace(/ /g, "");
+    for (const prefix of [
+      "uefa", "fifa", "concacaf", "conmebol", "caf", "afc", "ofc",
+      "ihf", "ehf"
+    ]) {
+      if (normalized.startsWith(prefix) && normalized.length > prefix.length + 3) {
+        normalized = normalized.slice(prefix.length);
+        break;
+      }
+    }
+    return normalized;
+  };
+  const targetComparable = comparable(target);
+
   for (const canonical of sport.competitions) {
     const aliases = SPORTSAPI_COMPETITION_ALIASES[sportId]?.[canonical] || [];
-    if ([canonical, ...aliases].some(
-      name => normalizeFavoriteCompetition(name) === target
-    )) {
+    const candidates = [canonical, ...aliases];
+    if (candidates.some(name => normalizeFavoriteCompetition(name) === target)) {
+      return canonical;
+    }
+    // SportsAPI puede variar el sufijo comercial o anteponer el organismo
+    // rector; acepta únicamente coincidencias largas y específicas.
+    if (targetComparable.length >= 8 && candidates.some(name => {
+      const candidate = comparable(name);
+      return candidate.length >= 8 &&
+        (candidate.startsWith(targetComparable) || targetComparable.startsWith(candidate));
+    })) {
       return canonical;
     }
   }
@@ -1297,7 +1345,7 @@ function sportsApiFavoritesResponse() {
 function sportsApiRoute(path) {
   const suffix=path.replace(/^\/api\/sportsapi\/?/,"");
   if(!suffix||suffix.includes("..")||suffix.includes("\\")||suffix.includes("//")) return null;
-  const roots={sports:[],livescores:["sport"],fixtures:["date","sport","league","page"],races:["date","sport","series","page"],categories:["sport"],leagues:["category","sport","country"],series:["category","sport"]};
+  const roots={sports:[],livescores:["sport"],fixtures:["date","sport","league","category","country","page"],races:["date","sport","series","page"],categories:["sport"],leagues:["category","sport","country"],series:["category","sport"]};
   if(Object.hasOwn(roots,suffix)) return {upstream:suffix,allowed:roots[suffix]};
   let m=suffix.match(/^fixtures\/(\d+)(?:\/(statistics|events|lineups|h2h|form|streaks|best-players))?$/);
   if(m) return {upstream:"fixtures/"+m[1]+(m[2]?"/"+m[2]:""),allowed:[]};
@@ -1309,12 +1357,24 @@ function sportsApiRoute(path) {
   if(m) return {upstream:"series/"+m[1]+"/"+m[2],allowed:["season","type","page"]};
   return null;
 }
+function routeNeedsDate(allowed) {
+  return allowed.includes("date");
+}
 function validateSportsApiQuery(params,allowed) {
   for(const [key,value] of params.entries()) if(!allowed.includes(key)||!value||value.length>120||/[\u0000-\u001F\u007F]/.test(value)) return "Parámetro no permitido o inválido: "+key;
   const date=params.get("date"); if(date&&!validDate(date)) return "Fecha inválida: YYYY-MM-DD.";
   const sport=params.get("sport"); if(sport&&!SPORTSAPI_SLUGS.has(sport)) return "Deporte no incluido en favoritos.";
   const page=params.get("page"); if(page&&(!/^\d+$/.test(page)||Number(page)>99)) return "Página fuera del rango permitido.";
   for(const key of ["league","series","category","season","session","round","limit"]) { const value=params.get(key); if(value&&(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<1)) return "Identificador inválido: "+key; }
+  if(routeNeedsDate(allowed) && !date) return "La fecha es obligatoria: YYYY-MM-DD.";
+  if(allowed.includes("date")) {
+    const country=params.get("country");
+    if(country&&!/^[a-z]{2}$/i.test(country)) return "El país debe usar un código ISO de dos letras.";
+    const selectors=["league","category","country"].filter(key=>params.has(key));
+    if(selectors.length>1) return "Usa solo uno de league, category o country.";
+    if(country&&!sport) return "El parámetro country requiere sport.";
+    if(selectors.length>0&&page&&page!=="0") return "page debe ser 0 al filtrar por league, category o country.";
+  }
   return null;
 }
 async function sportsApiProxy(request,env,route) {
@@ -1339,15 +1399,70 @@ async function sportsApiProxy(request,env,route) {
     }
   }
   try {
+    // Todas las instalaciones comparten una sola ranura por cuenta SportsAPI.
+    // El Durable Object reserva una petición cada 6,2 s (menos de 10/min).
+    await reserveSportsApiRequestSlot(env);
     const upstream=await fetch(upstreamUrl,{method:"GET",headers:{"Authorization":"Bearer "+apiKey,"Accept":"application/json"}});
     const body=await upstream.text(); let parsed;
     try { parsed=JSON.parse(body); } catch { return json({error:{code:"invalid_upstream_response",message:"SportsAPI devolvió una respuesta no JSON."}},502); }
-    if(!upstream.ok) { const retry=upstream.headers.get("Retry-After"); return json(parsed,upstream.status,{"Cache-Control":"no-store",...(retry?{"Retry-After":retry}:{})}); }
-    const ttl=route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"?3600:route.upstream==="livescores"?15:route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/")?45:120;
-    const filteredPayload = filterSportsApiFavoriteData(parsed, request, route);
-    const response=json(filteredPayload,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
-    await cachePut(cache,cacheKey,response.clone()); return response;
-  } catch { return json({error:{code:"upstream_unavailable",message:"No se pudo conectar con SportsAPI."}},503,{"Retry-After":"30"}); }
+    if(!upstream.ok) {
+      const retry=upstream.headers.get("Retry-After");
+      const headers={"Cache-Control":"no-store",
+        ...(retry?{"Retry-After":retry}:{})};
+      for (const header of ["RateLimit-Limit","RateLimit-Remaining","RateLimit-Reset"]) {
+        const value=upstream.headers.get(header);
+        if(value) headers[header]=value;
+      }
+      return json(parsed,upstream.status,headers);
+    }
+    const date=incoming.searchParams.get("date");
+    const today=new Date().toISOString().slice(0,10);
+    const listRoute=route.upstream==="fixtures"||route.upstream==="races";
+    const ttl=listRoute
+      ? date && date < today ? 3600 : date && date > today ? 300 : 90
+      : route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"
+        ? 3600
+        : route.upstream==="livescores" ? 15
+        : route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/") ? 45 : 120;
+
+    // Cachea el payload original; el filtro se aplica al responder. Así un
+    // cambio de alias no exige gastar otra consulta al proveedor.
+    const cacheResponse=json(parsed,200,{"Cache-Control":"public, max-age="+ttl});
+    await cachePut(cache,cacheKey,cacheResponse.clone());
+    return json(filterSportsApiFavoriteData(parsed, request, route),200,{
+      "Cache-Control":"public, max-age="+ttl,
+      "X-Data-Source":"sportsapi"
+    });
+  } catch (error) {
+    return json({error:{code:"upstream_unavailable",message:"No se pudo consultar SportsAPI de forma segura. Inténtalo de nuevo en unos segundos."}},503,{"Retry-After":"7"});
+  }
+}
+
+export class SportsApiRateLimiter {
+  constructor(state) {
+    this.state = state;
+    this.initialized = state.blockConcurrencyWhile(async () => {
+      this.nextAllowedAt = Number(
+        await state.storage.get("nextAllowedAt")
+      ) || 0;
+    });
+  }
+
+  async fetch() {
+    await this.initialized;
+    let waitMs = 0;
+    await this.state.blockConcurrencyWhile(async () => {
+      const now = Date.now();
+      const stored = Number(
+        await this.state.storage.get("nextAllowedAt")
+      ) || 0;
+      const slotAt = Math.max(now, stored);
+      waitMs = Math.max(0, slotAt - now);
+      this.nextAllowedAt = slotAt + 6200;
+      await this.state.storage.put("nextAllowedAt", this.nextAllowedAt);
+    });
+    return json({ waitMs }, 200, { "Cache-Control": "no-store" });
+  }
 }
 
 export { ChannelCatalogRoom };
