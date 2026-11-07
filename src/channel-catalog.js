@@ -1,6 +1,6 @@
 const JSON_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
   "Content-Type": "application/json; charset=utf-8",
   "Cache-Control": "no-store",
@@ -24,10 +24,14 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
   if (/\b(english|ingles)\b/.test(descriptiveText)) return "en";
   return "unknown";
 }
-const MAX_PLAYLIST_BYTES = 12 * 1024 * 1024;
-// Limita el trabajo de lectura y, sobre todo, las filas escritas en SQLite DO.
-const MAX_PARSED_PLAYLIST_CHANNELS = 20000;
-const MAX_IMPORTED_CHANNELS = 1000;
+const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
+// Admite catálogos grandes y procesa sus canales por lotes para no bloquear
+// una invocación del Durable Object ni agotar de golpe la cuota de escrituras.
+const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
+const MAX_IMPORTED_CHANNELS = 50000;
+const MAX_SOURCE_COUNT = 100;
+const MAX_CHANNEL_CATALOG_OFFSET = 5000000;
+const IMPORT_CHANNEL_BATCH_SIZE = 1000;
 const REFRESH_BATCH_SIZE = 2;
 // Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
 // escribir de nuevo miles de filas idénticas en el plan gratuito.
@@ -260,6 +264,87 @@ function parseJsonPlaylist(text, sourceUrl) {
   return channels;
 }
 
+function parseCsvRecord(line) {
+  const values = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if ((char === "," || char === ";") && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+  values.push(value.trim());
+  return values;
+}
+
+function parseCsvPlaylist(text, sourceUrl) {
+  const lines = text.split(/\r?\n/).filter(line => line.trim() && !line.trim().startsWith("#"));
+  if (lines.length === 0) return [];
+  const first = parseCsvRecord(lines[0]).map(value => value.toLowerCase().replace(/[\s_-]/g, ""));
+  const findColumn = names => first.findIndex(value => names.includes(value));
+  const nameColumn = findColumn(["name", "title", "channel", "channelname", "displayname"]);
+  const urlColumn = findColumn(["url", "stream", "streamurl", "src", "link", "file", "directsource"]);
+  const groupColumn = findColumn(["group", "grouptitle", "category", "genre"]);
+  const logoColumn = findColumn(["logo", "logourl", "tvglogo"]);
+  const hasHeader = urlColumn >= 0;
+  const channels = [];
+  for (let index = hasHeader ? 1 : 0; index < lines.length; index++) {
+    const columns = parseCsvRecord(lines[index]);
+    const url = hasHeader ? columns[urlColumn] : columns[1] || columns[0];
+    const name = hasHeader
+      ? (nameColumn >= 0 ? columns[nameColumn] || "" : "")
+      : (columns[1] ? columns[0] : "");
+    const group = groupColumn >= 0 ? columns[groupColumn] || "" : "";
+    const logo = logoColumn >= 0 ? columns[logoColumn] || "" : "";
+    const channel = channelFromPlaylistEntry(name, url, sourceUrl, group, logo);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
+  }
+  return channels;
+}
+
+function parseGenericXmlPlaylist(text, sourceUrl) {
+  const channels = [];
+  const blocks = /<(?:entry|item|channel|track|media)\b([^>]*)>([\s\S]*?)<\/(?:entry|item|channel|track|media)>/gi;
+  for (const match of text.matchAll(blocks)) {
+    const attributes = match[1] || "";
+    const body = match[2] || "";
+    const attr = name => {
+      const found = attributes.match(new RegExp(name + "\\s*=\\s*(['\\\"])([\\s\\S]*?)\\1", "i"));
+      return found ? decodeXmlEntities(found[2]) : "";
+    };
+    const tag = names => {
+      for (const name of names) {
+        const found = body.match(new RegExp("<" + name + "\\b[^>]*>([\\s\\S]*?)<\\/" + name + ">", "i"));
+        if (found) return decodeXmlEntities(found[1].trim());
+      }
+      return "";
+    };
+    const ref = body.match(/<ref\b[^>]*\bhref\s*=\s*(['"])([\s\S]*?)\1/i);
+    const streamUrl = attr("url") || attr("src") || attr("href") ||
+      tag(["location", "url", "stream", "stream-url", "src"]) ||
+      (ref ? decodeXmlEntities(ref[2].trim()) : "");
+    const name = attr("name") || attr("title") || tag(["title", "name", "display-name"]);
+    const logo = attr("logo") || attr("tvg-logo") || tag(["image", "logo"]);
+    const group = attr("group-title") || tag(["group-title", "category", "genre"]);
+    const channel = channelFromPlaylistEntry(name, streamUrl, sourceUrl, group, logo);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
+  }
+  return channels;
+}
+
 function parsePlainTextPlaylist(text, sourceUrl) {
   const channels = [];
   for (const rawLine of text.split(/\r?\n/)) {
@@ -305,11 +390,19 @@ export function parsePlaylist(text, sourceUrl) {
   if (/^\[playlist\]/i.test(normalized)) {
     return { format: "pls", channels: parsePls(normalized, sourceUrl) };
   }
-  if (/^<\?xml|^<(?:(?:[a-z0-9_-]+):)?playlist\b/i.test(normalized)) {
-    return { format: "xspf", channels: parseXspf(normalized, sourceUrl) };
+  if (/^<\?xml|^<(?:playlist|asx|tv|mpd|root|channels|streams)\b/i.test(normalized)) {
+    const xspf = parseXspf(normalized, sourceUrl);
+    const channels = xspf.length ? xspf : parseGenericXmlPlaylist(normalized, sourceUrl);
+    return { format: xspf.length ? "xspf" : "xml", channels };
   }
   if (normalized.startsWith("{") || normalized.startsWith("[")) {
     return { format: "json", channels: parseJsonPlaylist(normalized, sourceUrl) };
+  }
+  const firstLine = normalized.split(/\r?\n/).find(line => line.trim()) || "";
+  const isCsvHeader = /(?:^|[,;])\s*(?:name|title|channel|url|stream|stream_url)(?:\s*[,;]|$)/i.test(firstLine);
+  const filePath = new URL(sourceUrl).pathname.toLowerCase();
+  if (isCsvHeader || filePath.endsWith(".csv")) {
+    return { format: "csv", channels: parseCsvPlaylist(normalized, sourceUrl) };
   }
   return { format: "txt", channels: parsePlainTextPlaylist(normalized, sourceUrl) };
 }
@@ -319,6 +412,15 @@ export function selectSportsChannels(channels) {
   if (!Array.isArray(channels)) return [];
   return channels
     .filter(channel => channel && channel.isSports === 1)
+    .slice(0, MAX_IMPORTED_CHANNELS);
+}
+
+/** Conserva todos los canales reproducibles; la marca deportiva solo controla
+ * si posteriormente pueden publicarse en la sección Canales deportivos. */
+export function selectAllChannels(channels) {
+  if (!Array.isArray(channels)) return [];
+  return channels
+    .filter(channel => channel && typeof channel.url === "string" && channel.url)
     .slice(0, MAX_IMPORTED_CHANNELS);
 }
 
@@ -350,7 +452,7 @@ async function fetchPublicPlaylist(sourceUrl) {
 
 async function readTextLimited(sourceResponse) {
   const declared = Number(sourceResponse.headers.get("Content-Length") || 0);
-  if (declared > MAX_PLAYLIST_BYTES) throw new Error("La lista supera el límite de 12 MB.");
+  if (declared > MAX_PLAYLIST_BYTES) throw new Error("La lista supera el límite de 25 MB.");
   if (!sourceResponse.body) return "";
   const reader = sourceResponse.body.getReader();
   const chunks = [];
@@ -361,7 +463,7 @@ async function readTextLimited(sourceResponse) {
     size += item.value.byteLength;
     if (size > MAX_PLAYLIST_BYTES) {
       await reader.cancel();
-      throw new Error("La lista supera el límite de 12 MB.");
+      throw new Error("La lista supera el límite de 25 MB.");
     }
     chunks.push(item.value);
   }
@@ -464,7 +566,7 @@ export async function handleChannelRoutes(request, env, path) {
     const incoming = new URL(request.url);
     const offset = Math.max(
       0,
-      Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0)
+      Math.min(MAX_CHANNEL_CATALOG_OFFSET, Number(incoming.searchParams.get("offset") || 0) || 0)
     );
     const limit = Math.max(
       1,
@@ -525,6 +627,32 @@ export async function handleChannelRoutes(request, env, path) {
     return response({ error: { code: "admin_required", message: "Esta cuenta no tiene permisos de administrador." } }, 403);
   }
 
+  if (path === "/api/channels/admin/sources/bulk" && method === "POST") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    if (!Array.isArray(payload && payload.sources) ||
+        payload.sources.length === 0 || payload.sources.length > MAX_SOURCE_COUNT) {
+      return response({
+        error: "Envía entre 1 y 100 listas en el lote."
+      }, 400);
+    }
+    const sources = [];
+    for (let index = 0; index < payload.sources.length; index++) {
+      const item = payload.sources[index];
+      const url = String(item && item.url || "").trim();
+      const label = cleanText(item && item.label || "Lista IPTV", 80);
+      if (!validPublicHttpsUrl(url) || !label) {
+        return response({
+          error: "La lista número " + (index + 1) + " necesita un nombre y una URL HTTPS pública válida."
+        }, 400);
+      }
+      sources.push({ url, label });
+    }
+    return callCatalog(env, "/sources/bulk", "POST", { sources });
+  }
+
   // Gestión de licencias: solo la cuenta administradora puede conceder,
   // consultar o revocar accesos de pago y pases gratuitos.
   if (path === "/api/channels/admin/licenses" && method === "GET") {
@@ -567,7 +695,7 @@ export async function handleChannelRoutes(request, env, path) {
   if (path === "/api/channels/admin/catalog" && method === "GET") {
     const incoming = new URL(request.url);
     const search = cleanText(incoming.searchParams.get("q") || "", 100);
-    const cursor = Math.max(0, Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0));
+    const cursor = Math.max(0, Math.min(MAX_CHANNEL_CATALOG_OFFSET, Number(incoming.searchParams.get("offset") || 0) || 0));
     return callCatalog(env, "/catalog?scope=admin&q=" + encodeURIComponent(search) + "&offset=" + cursor);
   }
 
@@ -586,6 +714,22 @@ export async function handleChannelRoutes(request, env, path) {
       return response({ error: "Usa una URL HTTPS pública, sin credenciales ni direcciones locales." }, 400);
     }
     return callCatalog(env, "/sources", "POST", { url, label });
+  }
+
+  const sourceUpdate = path.match(/^\/api\/channels\/admin\/sources\/([a-zA-Z0-9_-]{1,100})$/);
+  if (sourceUpdate && method === "PUT") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    const url = String(payload && payload.url || "").trim();
+    const label = cleanText(payload && payload.label || "Lista IPTV", 80);
+    if (!validPublicHttpsUrl(url)) {
+      return response({ error: "Usa una URL HTTPS pública, sin credenciales ni direcciones locales." }, 400);
+    }
+    return callCatalog(env, "/sources/" + encodeURIComponent(sourceUpdate[1]), "PUT", {
+      url, label
+    });
   }
 
   const sourceRetry = path.match(/^\/api\/channels\/admin\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
@@ -614,6 +758,25 @@ export async function handleChannelRoutes(request, env, path) {
     return callCatalog(env, "/visibility/" + encodeURIComponent(visibility[1]), "PATCH", {
       visible: payload.visible
     });
+  }
+
+  const classification = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})\/classification$/);
+  if (classification && method === "PATCH") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    if (typeof (payload && payload.isSports) !== "boolean") {
+      return response({ error: "La clasificación deportiva debe ser verdadera o falsa." }, 400);
+    }
+    return callCatalog(env, "/classification/" + encodeURIComponent(classification[1]), "PATCH", {
+      isSports: payload.isSports
+    });
+  }
+
+  const channelRemoval = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+  if (channelRemoval && method === "DELETE") {
+    return callCatalog(env, "/channels/" + encodeURIComponent(channelRemoval[1]), "DELETE");
   }
 
   const languagePrefix = "/api/channels/admin/channels/";
@@ -652,6 +815,12 @@ export class ChannelCatalogRoom {
       "source_url TEXT NOT NULL, updated_at TEXT NOT NULL)"
     );
     this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS blocked_channels (" +
+      "stream_url TEXT PRIMARY KEY, channel_id TEXT NOT NULL, " +
+      "identifier TEXT NOT NULL, name TEXT NOT NULL, blocked_at TEXT NOT NULL)"
+    );
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_blocked_channels_id ON blocked_channels(channel_id)");
+    this.sql.exec(
       "CREATE TABLE IF NOT EXISTS channel_catalog_schema_migrations (" +
       "version INTEGER PRIMARY KEY)"
     );
@@ -675,7 +844,7 @@ export class ChannelCatalogRoom {
       "id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, label TEXT NOT NULL, " +
       "status TEXT NOT NULL DEFAULT 'queued', format TEXT NOT NULL DEFAULT '', last_imported_at TEXT, " +
       "last_error TEXT NOT NULL DEFAULT '', imported_count INTEGER NOT NULL DEFAULT 0, " +
-      "next_refresh_at INTEGER NOT NULL DEFAULT 0)"
+      "import_offset INTEGER NOT NULL DEFAULT 0, next_refresh_at INTEGER NOT NULL DEFAULT 0)"
     );
     const sourceFormatMigration = Array.from(this.sql.exec(
       "SELECT version FROM channel_catalog_schema_migrations WHERE version = 4"
@@ -689,6 +858,20 @@ export class ChannelCatalogRoom {
       }
       this.sql.exec(
         "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (4)"
+      );
+    }
+    const sourceImportMigration = Array.from(this.sql.exec(
+      "SELECT version FROM channel_catalog_schema_migrations WHERE version = 5"
+    ));
+    if (sourceImportMigration.length === 0) {
+      try {
+        this.sql.exec("ALTER TABLE sources ADD COLUMN import_offset INTEGER NOT NULL DEFAULT 0");
+      } catch (error) {
+        const message = String(error && error.message || error).toLowerCase();
+        if (!message.includes("duplicate column name")) throw error;
+      }
+      this.sql.exec(
+        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (5)"
       );
     }
     this.sql.exec(
@@ -797,7 +980,7 @@ export class ChannelCatalogRoom {
     if (path === "/catalog" && request.method === "GET") {
       const admin = url.searchParams.get("scope") === "admin";
       const search = cleanText(url.searchParams.get("q") || "", 100);
-      const offset = Math.max(0, Math.min(100000, Number(url.searchParams.get("offset") || 0) || 0));
+      const offset = Math.max(0, Math.min(MAX_CHANNEL_CATALOG_OFFSET, Number(url.searchParams.get("offset") || 0) || 0));
       const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get("limit") || 200) || 200));
       const where = admin ? "1=1" : "visible = 1 AND is_sports = 1";
       const filter = search ? " AND (lower(name) LIKE ? OR lower(group_title) LIKE ?)" : "";
@@ -911,9 +1094,14 @@ export class ChannelCatalogRoom {
 
     if (path === "/sources" && request.method === "GET") {
       const rows = Array.from(this.sql.exec(
-        "SELECT id, url, label, status, format, last_imported_at, last_error, imported_count FROM sources ORDER BY label COLLATE NOCASE"
+        "SELECT id, url, label, status, format, last_imported_at, last_error, imported_count, import_offset FROM sources ORDER BY label COLLATE NOCASE"
       ));
-      return response({ sources: rows, count: rows.length });
+      return response({
+        sources: rows,
+        count: rows.length,
+        limit: MAX_SOURCE_COUNT,
+        remaining: Math.max(0, MAX_SOURCE_COUNT - rows.length)
+      });
     }
 
     if (path === "/sources" && request.method === "POST") {
@@ -925,14 +1113,104 @@ export class ChannelCatalogRoom {
       const label = cleanText(payload && payload.label || "Lista IPTV", 80);
       if (!validPublicHttpsUrl(sourceUrl)) return response({ error: "URL HTTPS pública no válida." }, 400);
       const existing = Array.from(this.sql.exec("SELECT id FROM sources WHERE url = ?", sourceUrl))[0];
+      const totalRows = Array.from(this.sql.exec("SELECT COUNT(*) AS total FROM sources"))[0];
+      const total = Number(totalRows && totalRows.total || 0);
+      if (!existing && total >= MAX_SOURCE_COUNT) {
+        return response({
+          error: "El catálogo ya tiene sus 100 listas. Quita una fuente antes de añadir otra.",
+          count: total,
+          limit: MAX_SOURCE_COUNT
+        }, 409);
+      }
       const id = existing ? existing.id : crypto.randomUUID();
       this.sql.exec(
-        "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0) " +
-        "ON CONFLICT(url) DO UPDATE SET label = excluded.label, status = 'queued', last_error = '', next_refresh_at = 0",
+        "INSERT INTO sources (id, url, label, status, imported_count, import_offset, next_refresh_at) VALUES (?, ?, ?, 'queued', 0, 0, 0) " +
+        "ON CONFLICT(url) DO UPDATE SET label = excluded.label, status = 'queued', last_error = '', imported_count = 0, import_offset = 0, next_refresh_at = 0",
         id, sourceUrl, label
       );
       await this.state.storage.setAlarm(Date.now() + 1000);
-      return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano." }, 202);
+      return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano.", count: existing ? total : total + 1, limit: MAX_SOURCE_COUNT }, 202);
+    }
+
+    if (path === "/sources/bulk" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const batch = Array.isArray(payload && payload.sources) ? payload.sources : [];
+      if (batch.length === 0 || batch.length > MAX_SOURCE_COUNT) {
+        return response({ error: "El lote debe contener entre 1 y 100 listas." }, 400);
+      }
+      let total = Number(Array.from(this.sql.exec(
+        "SELECT COUNT(*) AS total FROM sources"
+      ))[0]?.total || 0);
+      let added = 0;
+      let duplicates = 0;
+      let skipped = 0;
+      for (const item of batch) {
+        const sourceUrl = String(item && item.url || "").trim();
+        const label = cleanText(item && item.label || "Lista IPTV", 80);
+        if (!validPublicHttpsUrl(sourceUrl) || !label) {
+          skipped += 1;
+          continue;
+        }
+        const existing = Array.from(this.sql.exec(
+          "SELECT id FROM sources WHERE url = ?", sourceUrl
+        ))[0];
+        if (existing) {
+          duplicates += 1;
+          continue;
+        }
+        if (total >= MAX_SOURCE_COUNT) {
+          skipped += 1;
+          continue;
+        }
+        this.sql.exec(
+          "INSERT INTO sources (id, url, label, status, imported_count, import_offset, next_refresh_at) VALUES (?, ?, ?, 'queued', 0, 0, 0)",
+          crypto.randomUUID(), sourceUrl, label
+        );
+        total += 1;
+        added += 1;
+      }
+      if (added > 0) await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({
+        added,
+        duplicates,
+        skipped,
+        total,
+        limit: MAX_SOURCE_COUNT,
+        complete: total === MAX_SOURCE_COUNT
+      }, 202);
+    }
+
+    const sourceUpdate = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})$/);
+    if (sourceUpdate && request.method === "PUT") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const sourceUrl = String(payload && payload.url || "").trim();
+      const label = cleanText(payload && payload.label || "Lista IPTV", 80);
+      if (!validPublicHttpsUrl(sourceUrl)) {
+        return response({ error: "URL HTTPS pública no válida." }, 400);
+      }
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM sources WHERE id = ?", sourceUpdate[1]
+      ))[0];
+      if (!existing) return response({ error: "La lista ya no está registrada." }, 404);
+      const duplicate = Array.from(this.sql.exec(
+        "SELECT id FROM sources WHERE url = ? AND id != ?",
+        sourceUrl, sourceUpdate[1]
+      ))[0];
+      if (duplicate) {
+        return response({ error: "Otra lista ya utiliza esa URL." }, 409);
+      }
+      this.sql.exec(
+        "UPDATE sources SET url = ?, label = ?, status = 'queued', format = '', last_error = '', imported_count = 0, next_refresh_at = 0 WHERE id = ?",
+        sourceUrl, label, sourceUpdate[1]
+      );
+      await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({ updated: true, id: sourceUpdate[1], status: "queued" }, 200);
     }
 
     const sourceRetry = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})\/retry$/);
@@ -965,11 +1243,56 @@ export class ChannelCatalogRoom {
       });
     }
 
+    const channelRemoval = path.match(/^\/channels\/([a-zA-Z0-9_-]{1,100})$/);
+    if (channelRemoval && request.method === "DELETE") {
+      const channel = Array.from(this.sql.exec(
+        "SELECT id, identifier, name, stream_url FROM channels WHERE id = ?",
+        channelRemoval[1]
+      ))[0];
+      if (!channel) return response({ error: "Canal no encontrado." }, 404);
+      const blockedAt = new Date().toISOString();
+      this.sql.exec(
+        "INSERT OR IGNORE INTO blocked_channels (stream_url, channel_id, identifier, name, blocked_at) VALUES (?, ?, ?, ?, ?)",
+        channel.stream_url, channel.id, channel.identifier, channel.name, blockedAt
+      );
+      this.sql.exec("DELETE FROM favorites WHERE channel_id = ?", channel.id);
+      this.sql.exec("DELETE FROM channels WHERE id = ?", channel.id);
+      return response({
+        deleted: true,
+        id: channel.id,
+        identifier: channel.identifier,
+        blockedFromReimport: true
+      });
+    }
+
+    if (path === "/scheduled-refresh" && request.method === "POST") {
+      const dueRows = Array.from(this.sql.exec(
+        "SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?",
+        Date.now()
+      ));
+      const due = Number(dueRows[0] && dueRows[0].total || 0);
+      if (due > 0) await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({
+        queued: due > 0,
+        due,
+        message: due > 0
+          ? "Se programaron solo las fuentes cuyo intervalo de actualización venció."
+          : "No hay fuentes pendientes de actualización."
+      }, due > 0 ? 202 : 200);
+    }
+
     if (path === "/refresh" && request.method === "POST") {
+      this.sql.exec(
+        "UPDATE sources SET status = 'queued', imported_count = 0, import_offset = 0, next_refresh_at = 0 " +
+        "WHERE status != 'importing'"
+      );
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({
         queued: true,
-        message: "La actualización se ejecutará en segundo plano por lotes."
+        total: Number(Array.from(this.sql.exec(
+          "SELECT COUNT(*) AS total FROM sources"
+        ))[0]?.total || 0),
+        message: "Las fuentes se actualizarán en segundo plano por lotes."
       }, 202);
     }
 
@@ -991,6 +1314,36 @@ export class ChannelCatalogRoom {
       this.sql.exec("UPDATE channels SET visible = ?, updated_at = ? WHERE id = ?",
         visible ? 1 : 0, new Date().toISOString(), visibility[1]);
       return response({ updated: true, visible });
+    }
+
+    const classification = path.match(/^\/classification\/([a-zA-Z0-9_-]{1,100})$/);
+    if (classification && request.method === "PATCH") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      if (typeof (payload && payload.isSports) !== "boolean") {
+        return response({ error: "La clasificación deportiva debe ser verdadera o falsa." }, 400);
+      }
+      const existing = Array.from(this.sql.exec(
+        "SELECT id FROM channels WHERE id = ?",
+        classification[1]
+      ))[0];
+      if (!existing) return response({ error: "Canal no encontrado." }, 404);
+      const isSports = payload.isSports;
+      this.sql.exec(
+        "UPDATE channels SET is_sports = ?, visible = CASE WHEN ? = 0 THEN 0 ELSE visible END, updated_at = ? WHERE id = ?",
+        isSports ? 1 : 0, isSports ? 1 : 0, new Date().toISOString(), classification[1]
+      );
+      const row = Array.from(this.sql.exec(
+        "SELECT visible FROM channels WHERE id = ?",
+        classification[1]
+      ))[0];
+      return response({
+        updated: true,
+        isSports,
+        visible: Boolean(row && row.visible)
+      });
     }
 
     const languagePrefix = "/language/";
@@ -1072,7 +1425,7 @@ export class ChannelCatalogRoom {
 
   async refreshBatch() {
     const due = Array.from(this.sql.exec(
-      "SELECT id, url, label FROM sources WHERE next_refresh_at <= ? " +
+      "SELECT id, url, label, status, imported_count, import_offset FROM sources WHERE next_refresh_at <= ? " +
       "ORDER BY next_refresh_at ASC, label COLLATE NOCASE LIMIT ?",
       Date.now(), REFRESH_BATCH_SIZE
     ));
@@ -1080,6 +1433,13 @@ export class ChannelCatalogRoom {
     const results = [];
     for (const source of due) {
       try {
+        const isContinuing = source.status === "importing";
+        const offset = isContinuing ? Number(source.import_offset || 0) : 0;
+        const importedBefore = isContinuing ? Number(source.imported_count || 0) : 0;
+        this.sql.exec(
+          "UPDATE sources SET status = 'importing', last_error = '', import_offset = ?, imported_count = ? WHERE id = ?",
+          offset, importedBefore, source.id
+        );
         if (!validPublicHttpsUrl(source.url)) throw new Error("La fuente no es una URL HTTPS pública.");
         const fetched = await fetchPublicPlaylist(source.url);
         const sourceResponse = fetched.response;
@@ -1088,10 +1448,10 @@ export class ChannelCatalogRoom {
         if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista multimedia directa.");
         const text = await readTextLimited(sourceResponse);
         const parsedPlaylist = parsePlaylist(text, fetched.finalUrl);
-        const parsed = selectSportsChannels(parsedPlaylist.channels);
+        const parsed = selectAllChannels(parsedPlaylist.channels);
         if (parsed.length === 0) {
           throw new Error("La lista " + parsedPlaylist.format.toUpperCase() +
-            " se pudo leer, pero no contiene canales deportivos con señales directas compatibles.");
+            " no contiene canales con URLs multimedia directas compatibles.");
         }
         // La fuente pudo retirarse mientras se descargaba. En ese caso no se
         // añaden canales nuevos después de que el administrador la haya quitado.
@@ -1099,8 +1459,16 @@ export class ChannelCatalogRoom {
           "SELECT id FROM sources WHERE id = ?", source.id
         ))[0];
         if (!stillRegistered) continue;
+
         const timestamp = new Date().toISOString();
-        for (const channel of parsed) {
+        const batch = parsed.slice(offset, offset + IMPORT_CHANNEL_BATCH_SIZE);
+        let sourceImported = 0;
+        for (const channel of batch) {
+          const blocked = Array.from(this.sql.exec(
+            "SELECT stream_url FROM blocked_channels WHERE stream_url = ?",
+            channel.url
+          ))[0];
+          if (blocked) continue;
           const identifier = await identifierFor(channel.name, channel.url);
           this.sql.exec(
             "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
@@ -1114,20 +1482,38 @@ export class ChannelCatalogRoom {
             "channels.is_sports != excluded.is_sports OR " +
             "(excluded.language != 'unknown' AND channels.language != excluded.language)",
             identifier, identifier, channel.name, channel.url, channel.logoUrl,
-            channel.groupTitle, channel.isSports, channel.language, source.url, timestamp
+            channel.groupTitle, channel.isSports ? 1 : 0, channel.language, source.url, timestamp
           );
+          sourceImported += 1;
         }
-        imported += parsed.length;
-        this.sql.exec(
-          "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, next_refresh_at = ? WHERE id = ?",
-          parsedPlaylist.format, timestamp, parsed.length, Date.now() + REFRESH_INTERVAL_MS, source.id
-        );
-        results.push({
-          label: source.label,
-          imported: parsed.length,
-          format: parsedPlaylist.format,
-          status: "ok"
-        });
+
+        const nextOffset = offset + batch.length;
+        const totalImported = importedBefore + sourceImported;
+        imported += sourceImported;
+        if (nextOffset < parsed.length) {
+          this.sql.exec(
+            "UPDATE sources SET status = 'importing', format = ?, last_error = '', imported_count = ?, import_offset = ?, next_refresh_at = ? WHERE id = ?",
+            parsedPlaylist.format, totalImported, nextOffset, Date.now() + 2000, source.id
+          );
+          results.push({
+            label: source.label,
+            imported: totalImported,
+            totalChannels: parsed.length,
+            status: "importing"
+          });
+        } else {
+          this.sql.exec(
+            "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, import_offset = 0, next_refresh_at = ? WHERE id = ?",
+            parsedPlaylist.format, timestamp, totalImported, Date.now() + REFRESH_INTERVAL_MS, source.id
+          );
+          results.push({
+            label: source.label,
+            imported: totalImported,
+            totalChannels: parsed.length,
+            format: parsedPlaylist.format,
+            status: "ok"
+          });
+        }
       } catch (error) {
         const message = cleanText(error && error.message || "Error al importar la fuente.", 240);
         if (message.includes("Exceeded allowed rows written in Durable Objects free tier")) {
@@ -1142,7 +1528,7 @@ export class ChannelCatalogRoom {
           };
         }
         this.sql.exec(
-          "UPDATE sources SET status = 'error', last_error = ?, next_refresh_at = ? WHERE id = ?",
+          "UPDATE sources SET status = 'error', last_error = ?, import_offset = 0, next_refresh_at = ? WHERE id = ?",
           message, Date.now() + 30 * 60 * 1000, source.id
         );
         results.push({ label: source.label, imported: 0, status: "error", error: message });
@@ -1158,8 +1544,6 @@ export class ChannelCatalogRoom {
     ));
     const hasPending = Number(pendingRows[0] && pendingRows[0].total || 0) > 0;
     if (hasPending) {
-      // Continúa pronto con el siguiente lote; evita dejar listas esperando
-      // un minuto entre cada grupo de tres fuentes.
       await this.state.storage.setAlarm(Date.now() + 2000);
     } else if (nextAt > 0) {
       await this.state.storage.setAlarm(nextAt);

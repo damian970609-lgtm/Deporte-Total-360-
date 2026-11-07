@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
+import { ChannelCatalogRoom, detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -47,6 +47,79 @@ test("health responde sin clave de proveedor", async () => {
   assert.equal(body.provider_configured, false);
 });
 
+
+test("el cron programa solo las fuentes vencidas del catálogo", async () => {
+  let requestedPath = "";
+  let waited;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return {
+          fetch(internalRequest) {
+            requestedPath = new URL(internalRequest.url).pathname;
+            return Promise.resolve(new Response(JSON.stringify({ queued: true, due: 3 }), {
+              status: 202,
+              headers: { "Content-Type": "application/json" }
+            }));
+          }
+        };
+      }
+    }
+  };
+  worker.scheduled({}, env, {
+    waitUntil(promise) {
+      waited = promise;
+    }
+  });
+  assert.equal(requestedPath, "/scheduled-refresh");
+  assert.ok(waited);
+  assert.equal((await waited).status, 202);
+});
+
+test("el refresco programado solo activa un lote cuando hay fuentes vencidas", async () => {
+  const alarms = [];
+  let initialization;
+  const state = {
+    storage: {
+      sql: {
+        exec(query) {
+          if (query.includes("SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?")) {
+            return [{ total: 3 }];
+          }
+          return [];
+        }
+      },
+      async setAlarm(timestamp) {
+        alarms.push(timestamp);
+      }
+    },
+    blockConcurrencyWhile(callback) {
+      initialization = callback();
+      return initialization;
+    }
+  };
+  const room = new ChannelCatalogRoom(state, {});
+  await initialization;
+  const previousAlarmCount = alarms.length;
+
+  const response = await room.fetch(new Request(
+    "https://channel-catalog.internal/scheduled-refresh",
+    { method: "POST" }
+  ));
+  const body = await response.json();
+
+  assert.equal(response.status, 202);
+  assert.deepEqual(body, {
+    queued: true,
+    due: 3,
+    message: "Se programaron solo las fuentes cuyo intervalo de actualización venció."
+  });
+  assert.equal(alarms.length, previousAlarmCount + 1);
+});
 
 test("catálogo en vivo devuelve vacío cuando no está configurado", async () => {
   const response = await worker.fetch(request("/api/live/sources"), {});
@@ -621,7 +694,7 @@ test("el catálogo público reenvía búsqueda, offset y tamaño de página", as
             return new Response(JSON.stringify({
               configured: true,
               channels: [],
-              offset: 200,
+              offset: 250000,
               hasMore: false
             }), {
               status: 200,
@@ -634,17 +707,17 @@ test("el catálogo público reenvía búsqueda, offset y tamaño de página", as
   };
 
   const response = await worker.fetch(
-    request("/api/channels?offset=200&q=ESPN&limit=1500"), env
+    request("/api/channels?offset=250000&q=ESPN&limit=1500"), env
   );
   const body = await response.json();
 
   assert.equal(response.status, 200);
   assert.equal(capturedUrl.pathname, "/catalog");
   assert.equal(capturedUrl.searchParams.get("scope"), "public");
-  assert.equal(capturedUrl.searchParams.get("offset"), "200");
+  assert.equal(capturedUrl.searchParams.get("offset"), "250000");
   assert.equal(capturedUrl.searchParams.get("limit"), "1500");
   assert.equal(capturedUrl.searchParams.get("q"), "ESPN");
-  assert.equal(body.offset, 200);
+  assert.equal(body.offset, 250000);
 });
 
 
@@ -840,6 +913,248 @@ test("el panel admin puede retirar una fuente y reintentarla con sesión Google 
   }
 });
 
+test("el administrador puede corregir la clasificación deportiva de un canal", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname,
+              body: await internalRequest.json()
+            });
+            return new Response(JSON.stringify({
+              updated: true,
+              isSports: true,
+              visible: false
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+        })
+      }
+    };
+    const classificationRequest = new Request(
+      "https://worker.example/api/channels/admin/channels/channel-123/classification",
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: "Bearer signed-google-id-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ isSports: true })
+      }
+    );
+    const result = await handleChannelRoutes(
+      classificationRequest, env, new URL(classificationRequest.url).pathname
+    );
+    assert.equal(result.status, 200);
+    assert.deepEqual(await result.json(), {
+      updated: true,
+      isSports: true,
+      visible: false
+    });
+    assert.deepEqual(forwarded, [{
+      method: "PATCH",
+      path: "/classification/channel-123",
+      body: { isSports: true }
+    }]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("el panel admin puede eliminar un canal y rechaza cuentas que no son propietarias", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  let identityEmail = "admin@example.com";
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: identityEmail,
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname
+            });
+            return new Response(JSON.stringify({
+              deleted: true,
+              blockedFromReimport: true
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+        })
+      }
+    };
+    const headers = { Authorization: "Bearer signed-google-id-token" };
+    const removeRequest = new Request(
+      "https://worker.example/api/channels/admin/channels/channel-123",
+      { method: "DELETE", headers }
+    );
+    const removed = await handleChannelRoutes(
+      removeRequest, env, new URL(removeRequest.url).pathname
+    );
+    assert.equal(removed.status, 200);
+    assert.deepEqual(await removed.json(), {
+      deleted: true,
+      blockedFromReimport: true
+    });
+
+    identityEmail = "other@example.com";
+    const denied = await handleChannelRoutes(
+      removeRequest, env, new URL(removeRequest.url).pathname
+    );
+    assert.equal(denied.status, 403);
+    assert.deepEqual(forwarded, [
+      { method: "DELETE", path: "/channels/channel-123" }
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+
+
+test("el administrador puede enviar un lote para completar exactamente 100 listas", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname,
+              body: await internalRequest.json()
+            });
+            return new Response(JSON.stringify({
+              added: 94,
+              duplicates: 6,
+              skipped: 0,
+              total: 100,
+              limit: 100,
+              complete: true
+            }), { status: 202, headers: { "Content-Type": "application/json" } });
+          }
+        })
+      }
+    };
+    const bulkRequest = new Request(
+      "https://worker.example/api/channels/admin/sources/bulk",
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer signed-google-id-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sources: [
+            { label: "Lista A", url: "https://lists.example/a.m3u" },
+            { label: "Lista B", url: "https://lists.example/b.csv" }
+          ]
+        })
+      }
+    );
+    const result = await handleChannelRoutes(
+      bulkRequest, env, new URL(bulkRequest.url).pathname
+    );
+    assert.equal(result.status, 202);
+    assert.equal((await result.json()).total, 100);
+    assert.equal(forwarded.length, 1);
+    assert.equal(forwarded[0].method, "POST");
+    assert.equal(forwarded[0].path, "/sources/bulk");
+    assert.equal(forwarded[0].body.sources.length, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("el parser importa todos los canales, incluidos los que no son deportivos", () => {
+  const channels = [
+    { name: "Noticias", url: "https://media.example/news.m3u8", isSports: 0 },
+    { name: "Deportes", url: "https://media.example/sports.m3u8", isSports: 1 }
+  ];
+  assert.equal(selectAllChannels(channels).length, 2);
+  assert.equal(selectAllChannels(channels)[0].isSports, 0);
+  assert.equal(selectSportsChannels(channels).length, 1);
+});
+
+test("el selector conserva más de mil canales de una fuente sin truncarlos a mil", () => {
+  const channels = Array.from({ length: 1201 }, (_, index) => ({
+    name: "Canal " + index,
+    url: "https://media.example/channel-" + index + ".m3u8",
+    isSports: index % 2
+  }));
+  assert.equal(selectAllChannels(channels).length, 1201);
+});
+
+test("importa CSV y XML ASX además de M3U, PLS, XSPF, JSON y TXT", () => {
+  const csv = parsePlaylist(
+    'name,url,group\n"Canal de noticias","https://media.example/news.m3u8","News"',
+    "https://lists.example/channels.csv"
+  );
+  assert.equal(csv.format, "csv");
+  assert.equal(csv.channels.length, 1);
+  assert.equal(csv.channels[0].name, "Canal de noticias");
+  assert.equal(csv.channels[0].isSports, 0);
+
+  const xml = parsePlaylist(
+    '<asx><entry><ref href="https://media.example/sports.m3u8"/><title>Sports Channel</title></entry></asx>',
+    "https://lists.example/channels.xml"
+  );
+  assert.equal(xml.format, "xml");
+  assert.equal(xml.channels.length, 1);
+  assert.equal(xml.channels[0].isSports, 1);
+});
 
 test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {
   const base = "https://lists.example/source.txt";
@@ -906,7 +1221,7 @@ test("un fallo del Durable Object de chat no derriba el Worker y responde 503 co
 });
 
 
-test("solo selecciona canales deportivos y limita importación por fuente a 1000", () => {
+test("el selector deportivo conserva todos los canales deportivos sin limitar a mil", () => {
   const mixed = [
     { name: "General TV", url: "https://media.example/general.m3u8", isSports: 0 },
     ...Array.from({ length: 1200 }, (_, index) => ({
@@ -916,7 +1231,7 @@ test("solo selecciona canales deportivos y limita importación por fuente a 1000
     }))
   ];
   const selected = selectSportsChannels(mixed);
-  assert.equal(selected.length, 1000);
+  assert.equal(selected.length, 1200);
   assert.equal(selected[0].name, "Sports Channel 0");
   assert.equal(selected.every(channel => channel.isSports === 1), true);
 });
