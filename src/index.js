@@ -1118,13 +1118,29 @@ function filterSportsApiFavoriteData(payload, request, route) {
     }
   }
 
+  // Evita dejar la agenda vacía por una diferencia de nombre del proveedor.
+  // Si hay partidos pero ninguno coincide con el catálogo estático, conserva
+  // el lote original; cuando sí hay coincidencias, mantiene el filtro normal.
+  if (filtered.length === 0 && payload.data.length > 0) {
+    return {
+      ...payload,
+      meta: {
+        ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
+        count: payload.data.length,
+        favoriteCompetitionFilter: false,
+        favoriteCompetitionFilterFallback: true
+      }
+    };
+  }
+
   return {
     ...payload,
     data: filtered,
     meta: {
       ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
       count: filtered.length,
-      favoriteCompetitionFilter: true
+      favoriteCompetitionFilter: true,
+      favoriteCompetitionFilterFallback: false
     }
   };
 }
