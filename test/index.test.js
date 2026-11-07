@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectSportsChannels } from "../src/channel-catalog.js";
+import { detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -905,6 +905,115 @@ test("el panel admin puede eliminar un canal y rechaza cuentas que no son propie
 });
 
 
+
+test("el administrador puede enviar un lote para completar exactamente 100 listas", async () => {
+  const previousFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.hostname, "oauth2.googleapis.com");
+    return new Response(JSON.stringify({
+      aud: "test-web-client",
+      iss: "https://accounts.google.com",
+      exp: String(Math.floor(Date.now() / 1000) + 3600),
+      email: "admin@example.com",
+      email_verified: true,
+      sub: "google-user-123"
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    const env = {
+      GOOGLE_OAUTH_CLIENT_ID: "test-web-client",
+      CHANNELS_ADMIN_EMAIL: "admin@example.com",
+      CHANNEL_CATALOG: {
+        idFromName: () => "catalog",
+        get: () => ({
+          async fetch(internalRequest) {
+            forwarded.push({
+              method: internalRequest.method,
+              path: new URL(internalRequest.url).pathname,
+              body: await internalRequest.json()
+            });
+            return new Response(JSON.stringify({
+              added: 94,
+              duplicates: 6,
+              skipped: 0,
+              total: 100,
+              limit: 100,
+              complete: true
+            }), { status: 202, headers: { "Content-Type": "application/json" } });
+          }
+        })
+      }
+    };
+    const bulkRequest = new Request(
+      "https://worker.example/api/channels/admin/sources/bulk",
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer signed-google-id-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sources: [
+            { label: "Lista A", url: "https://lists.example/a.m3u" },
+            { label: "Lista B", url: "https://lists.example/b.csv" }
+          ]
+        })
+      }
+    );
+    const result = await handleChannelRoutes(
+      bulkRequest, env, new URL(bulkRequest.url).pathname
+    );
+    assert.equal(result.status, 202);
+    assert.equal((await result.json()).total, 100);
+    assert.equal(forwarded.length, 1);
+    assert.equal(forwarded[0].method, "POST");
+    assert.equal(forwarded[0].path, "/sources/bulk");
+    assert.equal(forwarded[0].body.sources.length, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("el parser importa todos los canales, incluidos los que no son deportivos", () => {
+  const channels = [
+    { name: "Noticias", url: "https://media.example/news.m3u8", isSports: 0 },
+    { name: "Deportes", url: "https://media.example/sports.m3u8", isSports: 1 }
+  ];
+  assert.equal(selectAllChannels(channels).length, 2);
+  assert.equal(selectAllChannels(channels)[0].isSports, 0);
+  assert.equal(selectSportsChannels(channels).length, 1);
+});
+
+test("el selector conserva más de mil canales de una fuente sin truncarlos a mil", () => {
+  const channels = Array.from({ length: 1201 }, (_, index) => ({
+    name: "Canal " + index,
+    url: "https://media.example/channel-" + index + ".m3u8",
+    isSports: index % 2
+  }));
+  assert.equal(selectAllChannels(channels).length, 1201);
+});
+
+test("importa CSV y XML ASX además de M3U, PLS, XSPF, JSON y TXT", () => {
+  const csv = parsePlaylist(
+    'name,url,group\n"Canal de noticias","https://media.example/news.m3u8","News"',
+    "https://lists.example/channels.csv"
+  );
+  assert.equal(csv.format, "csv");
+  assert.equal(csv.channels.length, 1);
+  assert.equal(csv.channels[0].name, "Canal de noticias");
+  assert.equal(csv.channels[0].isSports, 0);
+
+  const xml = parsePlaylist(
+    '<asx><entry><ref href="https://media.example/sports.m3u8"/><title>Sports Channel</title></entry></asx>',
+    "https://lists.example/channels.xml"
+  );
+  assert.equal(xml.format, "xml");
+  assert.equal(xml.channels.length, 1);
+  assert.equal(xml.channels[0].isSports, 1);
+});
 
 test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {
   const base = "https://lists.example/source.txt";
