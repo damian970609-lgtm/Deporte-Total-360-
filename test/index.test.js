@@ -518,7 +518,7 @@ test("SportsAPI filtra partidos a las competiciones favoritas masculinas y femen
   assert.equal(body.meta.favoriteCompetitionFilter, true);
 });
 
-test("SportsAPI conserva la agenda si ninguna competición coincide con el catálogo exacto", async () => {
+test("SportsAPI no devuelve ligas ajenas cuando ninguna coincide con favoritos", async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     data: [
       { id: 51, league: { id: 51, name: "Eredivisie" } },
@@ -534,10 +534,10 @@ test("SportsAPI conserva la agenda si ninguna competición coincide con el catá
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  assert.deepEqual(body.data.map(item => item.id), [51, 52]);
-  assert.equal(body.meta.count, 2);
-  assert.equal(body.meta.favoriteCompetitionFilter, false);
-  assert.equal(body.meta.favoriteCompetitionFilterFallback, true);
+  assert.deepEqual(body.data, []);
+  assert.equal(body.meta.count, 0);
+  assert.equal(body.meta.favoriteCompetitionFilter, true);
+  assert.equal(body.meta.favoriteCompetitionFilterFallback, false);
 });
 
 test("SportsAPI filtra ciclismo por nombre de carrera y motor por serie", async () => {
