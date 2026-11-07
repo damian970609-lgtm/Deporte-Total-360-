@@ -206,3 +206,101 @@ test("el Worker no enruta el Chat sin un token Google", async () => {
   assert.equal(response.status, 401);
   assert.equal(roomCalled, false);
 });
+
+
+test("un comprador puede denunciar un mensaje ajeno una sola vez", async () => {
+  const { room } = makeRoom();
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow();
+    const sent = await room.fetch(chatRequest("POST", {
+      name: "Autor",
+      text: "Mensaje que infringe las reglas"
+    }, "buyer-author"));
+    const messageId = (await sent.json()).message.id;
+
+    Date.now = () => originalNow() + 3000;
+    const report = await room.fetch(chatRequest(
+      "POST",
+      { reason: "abuse" },
+      "buyer-reporter",
+      "member",
+      "/messages/" + messageId + "/report"
+    ));
+    const reportBody = await report.json();
+    assert.equal(report.status, 201);
+    assert.equal(reportBody.reported, true);
+
+    const duplicate = await room.fetch(chatRequest(
+      "POST",
+      { reason: "spam" },
+      "buyer-reporter",
+      "member",
+      "/messages/" + messageId + "/report"
+    ));
+    assert.equal(duplicate.status, 409);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("un comprador no puede denunciar su propio mensaje", async () => {
+  const { room } = makeRoom();
+  const sent = await room.fetch(chatRequest("POST", {
+    name: "Autor",
+    text: "Mi mensaje"
+  }, "buyer-own-report"));
+  const messageId = (await sent.json()).message.id;
+  const report = await room.fetch(chatRequest(
+    "POST",
+    { reason: "other" },
+    "buyer-own-report",
+    "member",
+    "/messages/" + messageId + "/report"
+  ));
+  assert.equal(report.status, 400);
+});
+
+test("solo el administrador puede leer y resolver denuncias", async () => {
+  const { room } = makeRoom();
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow();
+    const sent = await room.fetch(chatRequest("POST", {
+      name: "Autor",
+      text: "Texto denunciado"
+    }, "buyer-report-author"));
+    const messageId = (await sent.json()).message.id;
+    Date.now = () => originalNow() + 3000;
+    await room.fetch(chatRequest(
+      "POST",
+      { reason: "spam" },
+      "buyer-reporting-member",
+      "member",
+      "/messages/" + messageId + "/report"
+    ));
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const denied = await room.fetch(chatRequest("GET", undefined, "buyer-member", "member", "/reports"));
+  assert.equal(denied.status, 403);
+
+  const admin = await room.fetch(chatRequest("GET", undefined, "owner", "admin", "/reports"));
+  const report = (await admin.json()).reports[0];
+  assert.equal(admin.status, 200);
+  assert.equal(report.reason, "spam");
+  assert.equal(report.status, "pending");
+  assert.equal(report.messageText, "Texto denunciado");
+  assert.equal(Object.hasOwn(report, "reporterId"), false);
+
+  const resolved = await room.fetch(chatRequest(
+    "PATCH",
+    { status: "resolved" },
+    "owner",
+    "admin",
+    "/reports/" + report.id
+  ));
+  assert.equal(resolved.status, 200);
+  assert.equal((await resolved.json()).status, "resolved");
+});
