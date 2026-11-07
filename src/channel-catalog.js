@@ -24,10 +24,13 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
   if (/\b(english|ingles)\b/.test(descriptiveText)) return "en";
   return "unknown";
 }
-const MAX_PLAYLIST_BYTES = 12 * 1024 * 1024;
-// Limita el trabajo de lectura y, sobre todo, las filas escritas en SQLite DO.
-const MAX_PARSED_PLAYLIST_CHANNELS = 20000;
-const MAX_IMPORTED_CHANNELS = 1000;
+const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
+// Admite catálogos grandes y procesa sus canales por lotes para no bloquear
+// una invocación del Durable Object ni agotar de golpe la cuota de escrituras.
+const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
+const MAX_IMPORTED_CHANNELS = 50000;
+const MAX_SOURCE_COUNT = 100;
+const IMPORT_CHANNEL_BATCH_SIZE = 250;
 const REFRESH_BATCH_SIZE = 2;
 // Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
 // escribir de nuevo miles de filas idénticas en el plan gratuito.
@@ -319,6 +322,15 @@ export function selectSportsChannels(channels) {
   if (!Array.isArray(channels)) return [];
   return channels
     .filter(channel => channel && channel.isSports === 1)
+    .slice(0, MAX_IMPORTED_CHANNELS);
+}
+
+/** Conserva todos los canales reproducibles; la marca deportiva solo controla
+ * si posteriormente pueden publicarse en la sección Canales deportivos. */
+export function selectAllChannels(channels) {
+  if (!Array.isArray(channels)) return [];
+  return channels
+    .filter(channel => channel && typeof channel.url === "string" && channel.url)
     .slice(0, MAX_IMPORTED_CHANNELS);
 }
 
@@ -702,7 +714,7 @@ export class ChannelCatalogRoom {
       "id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, label TEXT NOT NULL, " +
       "status TEXT NOT NULL DEFAULT 'queued', format TEXT NOT NULL DEFAULT '', last_imported_at TEXT, " +
       "last_error TEXT NOT NULL DEFAULT '', imported_count INTEGER NOT NULL DEFAULT 0, " +
-      "next_refresh_at INTEGER NOT NULL DEFAULT 0)"
+      "import_offset INTEGER NOT NULL DEFAULT 0, next_refresh_at INTEGER NOT NULL DEFAULT 0)"
     );
     const sourceFormatMigration = Array.from(this.sql.exec(
       "SELECT version FROM channel_catalog_schema_migrations WHERE version = 4"
@@ -716,6 +728,20 @@ export class ChannelCatalogRoom {
       }
       this.sql.exec(
         "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (4)"
+      );
+    }
+    const sourceImportMigration = Array.from(this.sql.exec(
+      "SELECT version FROM channel_catalog_schema_migrations WHERE version = 5"
+    ));
+    if (sourceImportMigration.length === 0) {
+      try {
+        this.sql.exec("ALTER TABLE sources ADD COLUMN import_offset INTEGER NOT NULL DEFAULT 0");
+      } catch (error) {
+        const message = String(error && error.message || error).toLowerCase();
+        if (!message.includes("duplicate column name")) throw error;
+      }
+      this.sql.exec(
+        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (5)"
       );
     }
     this.sql.exec(
