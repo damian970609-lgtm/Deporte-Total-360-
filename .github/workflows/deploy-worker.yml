@@ -88,6 +88,8 @@ jobs:
           OAUTH="$(fetch_json /api/channels/auth-config)"
           CATALOG="$(fetch_json /api/sports)"
           FAVORITES="$(fetch_json /api/sportsapi/favorites)"
+          TODAY_UTC="$(date -u +%F)"
+          FIXTURES="$(fetch_json "/api/sportsapi/fixtures?date=$TODAY_UTC&sport=football&page=0")"
           CHAT_FILE="$(mktemp)"
           CHAT_STATUS="$(curl --silent --show-error --max-time 20 -o "$CHAT_FILE" -w '%{http_code}' "$BASE/api/chat/messages")"
           if [[ "$CHAT_STATUS" == "200" ]]; then
@@ -98,7 +100,7 @@ jobs:
             sed -n '1,10p' "$CHAT_FILE" >&2
           fi
           rm -f "$CHAT_FILE"
-          node - "$HEALTH" "$CHANNELS" "$CHAT" "$CHAT_STATUS" "$CHANNELS_QUOTA_EXHAUSTED" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" <<'NODE'
+          node - "$HEALTH" "$CHANNELS" "$CHAT" "$CHAT_STATUS" "$CHANNELS_QUOTA_EXHAUSTED" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" "$FIXTURES" <<'NODE'
           const health = JSON.parse(process.argv[2]);
           const channels = JSON.parse(process.argv[3]);
           const chat = JSON.parse(process.argv[4]);
@@ -108,6 +110,7 @@ jobs:
           const expectedOAuthClientId = process.argv[8];
           const catalog = JSON.parse(process.argv[9]);
           const favorites = JSON.parse(process.argv[10]);
+          const fixtures = JSON.parse(process.argv[11]);
           if (health.status !== "online") throw new Error("El endpoint /health no confirmó que el Worker está online.");
           if (health.provider_configured !== true) throw new Error("APISPORTS_KEY no está configurada.");
           if (health.sportsapi_configured !== true) throw new Error("SPORTAPI_API_KEY no está configurada.");
@@ -129,6 +132,8 @@ jobs:
           const missing = required.filter((id) => !available.has(id));
           if (missing.length) throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
           if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
-          console.log("Worker online; OAuth, catálogo de canales, deportes y favoritos verificados.");
+          if (!Array.isArray(fixtures.data)) throw new Error("SportsAPI no devolvió data[] en la ruta real de partidos.");
+          console.log("Worker online; OAuth, canales, deportes, favoritos y ruta real de fixtures verificados.");
+          console.log("Partidos recibidos en la consulta de prueba:", fixtures.data.length);
           console.log("Mensajes de chat disponibles:", Array.isArray(chat.messages) ? chat.messages.length : "chat temporalmente no disponible");
           NODE
