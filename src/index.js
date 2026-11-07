@@ -693,14 +693,115 @@ export class PublicChatRoom {
 
     if (url.pathname === "/messages" && request.method === "GET") {
       const stored = await this.state.storage.get("messages") || [];
+      const profile = await this.state.storage.get("chat:profile:" + userId);
       const messages = stored.map(({ authorId, ...message }) => ({
         ...message,
         isMine: authorId === userId
       }));
       return json({
         messages,
+        profile: profile ? { name: profile.name } : null,
         canModerate: role === "admin"
       }, 200, { "Cache-Control": "no-store" });
+    }
+
+    if (url.pathname === "/reports" && request.method === "GET") {
+      if (role !== "admin") {
+        return json({ error: { code: "moderator_required", message: "Solo el administrador puede consultar las denuncias." } }, 403);
+      }
+      const reports = await this.state.storage.get("reports") || [];
+      const messages = await this.state.storage.get("messages") || [];
+      const publicReports = reports
+        .map(({ reporterId, ...report }) => {
+          const message = messages.find(item => item.id === report.messageId);
+          return {
+            ...report,
+            messageName: message?.name || "Usuario",
+            messageText: message?.deleted ? "Mensaje eliminado por moderación." : (message?.text || "")
+          };
+        })
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return json({ reports: publicReports }, 200, { "Cache-Control": "no-store" });
+    }
+
+    const reportResolutionMatch = url.pathname.match(/^\/reports\/([a-zA-Z0-9_-]{1,100})$/);
+    if (reportResolutionMatch) {
+      if (request.method !== "PATCH") {
+        return json({ error: "Método no permitido" }, 405, { Allow: "PATCH, OPTIONS" });
+      }
+      if (role !== "admin") {
+        return json({ error: { code: "moderator_required", message: "Solo el administrador puede gestionar las denuncias." } }, 403);
+      }
+      let payload;
+      try { payload = await request.json(); } catch {
+        return json({ error: "El cuerpo debe ser JSON válido." }, 400);
+      }
+      const status = String(payload?.status || "");
+      if (!["resolved", "dismissed"].includes(status)) {
+        return json({ error: "El estado debe ser resolved o dismissed." }, 400);
+      }
+      const reports = await this.state.storage.get("reports") || [];
+      const index = reports.findIndex(item => item.id === reportResolutionMatch[1]);
+      if (index < 0) return json({ error: "La denuncia ya no existe." }, 404);
+      reports[index] = {
+        ...reports[index],
+        status,
+        reviewedAt: new Date().toISOString()
+      };
+      await this.state.storage.put("reports", reports);
+      return json({ updated: true, id: reportResolutionMatch[1], status });
+    }
+
+    const reportMatch = url.pathname.match(/^\/messages\/([a-zA-Z0-9_-]{1,100})\/report$/);
+    if (reportMatch) {
+      if (request.method !== "POST") {
+        return json({ error: "Método no permitido" }, 405, { Allow: "POST, OPTIONS" });
+      }
+      let payload;
+      try { payload = await request.json(); } catch {
+        return json({ error: "El cuerpo debe ser JSON válido." }, 400);
+      }
+      const reason = String(payload?.reason || "");
+      if (!["spam", "abuse", "harassment", "other"].includes(reason)) {
+        return json({ error: "Selecciona un motivo de denuncia válido." }, 400);
+      }
+      const operation = this.writeQueue.then(async () => {
+        const messages = await this.state.storage.get("messages") || [];
+        const message = messages.find(item => item.id === reportMatch[1]);
+        if (!message) return { missing: true };
+        if (message.deleted) return { unavailable: true };
+        if (message.authorId === userId) return { ownMessage: true };
+
+        const reports = await this.state.storage.get("reports") || [];
+        if (reports.some(item => item.messageId === message.id && item.reporterId === userId)) {
+          return { duplicate: true };
+        }
+        const profile = await this.state.storage.get("chat:profile:" + userId);
+        const report = {
+          id: crypto.randomUUID(),
+          messageId: message.id,
+          reporterId: userId,
+          reporterName: profile?.name || "Comprador",
+          reason,
+          status: "pending",
+          createdAt: new Date().toISOString()
+        };
+        reports.push(report);
+        if (reports.length > 500) reports.splice(0, reports.length - 500);
+        await this.state.storage.put("reports", reports);
+        return { report };
+      });
+      this.writeQueue = operation.then(() => undefined, () => undefined);
+      try {
+        const result = await operation;
+        if (result.missing) return json({ error: "El mensaje ya no existe." }, 404);
+        if (result.unavailable) return json({ error: "El mensaje ya fue eliminado." }, 409);
+        if (result.ownMessage) return json({ error: "No puedes denunciar tu propio mensaje." }, 400);
+        if (result.duplicate) return json({ error: "Ya has denunciado este mensaje." }, 409);
+        return json({ reported: true, reportId: result.report.id }, 201);
+      } catch {
+        return json({ error: "No se pudo registrar la denuncia. Inténtalo de nuevo." }, 500);
+      }
     }
 
     const deleteMatch = url.pathname.match(/^\/messages\/([a-zA-Z0-9_-]{1,100})$/);
@@ -1279,24 +1380,35 @@ export default {
     const path = incoming.pathname.replace(/\/+$/, "") || "/";
 
     // Chat privado: Google ID token válido + licencia comercial activa.
-    const chatPath = path.match(/^\/api\/chat\/messages(?:\/([a-zA-Z0-9_-]{1,100}))?$/);
-    if (chatPath) {
-      const messageId = chatPath[1] || null;
-      if (messageId ? request.method !== "DELETE" : !["GET", "POST"].includes(request.method)) {
-        return json(
-          { error: "Método no permitido" },
-          405,
-          { Allow: messageId ? "DELETE, OPTIONS" : "GET, POST, OPTIONS" }
-        );
+    const chatRoute = path.match(/^\/api\/chat\/(messages(?:\/[a-zA-Z0-9_-]{1,100}(?:\/report)?)?|reports(?:\/[a-zA-Z0-9_-]{1,100})?)$/);
+    if (chatRoute) {
+      const endpoint = chatRoute[1];
+      const isMessageList = endpoint === "messages";
+      const isMessageDelete = /^messages\/[a-zA-Z0-9_-]{1,100}$/.test(endpoint);
+      const isMessageReport = /^messages\/[a-zA-Z0-9_-]{1,100}\/report$/.test(endpoint);
+      const isReportsList = endpoint === "reports";
+      const isReportReview = /^reports\/[a-zA-Z0-9_-]{1,100}$/.test(endpoint);
+      const methodAllowed =
+        (isMessageList && ["GET", "POST"].includes(request.method)) ||
+        (isMessageDelete && request.method === "DELETE") ||
+        (isMessageReport && request.method === "POST") ||
+        (isReportsList && request.method === "GET") ||
+        (isReportReview && request.method === "PATCH");
+      if (!methodAllowed) {
+        const allow = isMessageDelete ? "DELETE, OPTIONS" :
+          (isMessageReport ? "POST, OPTIONS" :
+          (isReportsList ? "GET, OPTIONS" :
+          (isReportReview ? "PATCH, OPTIONS" : "GET, POST, OPTIONS")));
+        return json({ error: "Método no permitido" }, 405, { Allow: allow });
       }
 
       const access = await authorizeChatAccess(request, env);
       if (access.error) return access.error;
-      if (messageId && access.role !== "admin") {
+      if ((isMessageDelete || isReportsList || isReportReview) && access.role !== "admin") {
         return json({
           error: {
             code: "moderator_required",
-            message: "Solo el administrador puede moderar mensajes."
+            message: "Solo el administrador puede gestionar mensajes y denuncias."
           }
         }, 403);
       }
@@ -1306,8 +1418,7 @@ export default {
 
       const roomId = env.PUBLIC_CHAT_ROOM.idFromName("deporte-total-360-public");
       const room = env.PUBLIC_CHAT_ROOM.get(roomId);
-      const targetPath = messageId ? "/messages/" + messageId : "/messages";
-      const target = new URL("https://private-chat.internal" + targetPath);
+      const target = new URL("https://private-chat.internal/" + endpoint);
       try {
         const forwarded = new Request(target.toString(), request);
         const headers = new Headers(forwarded.headers);
