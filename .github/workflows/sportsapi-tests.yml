@@ -1,0 +1,35 @@
+name: SportsAPI Worker tests
+
+on:
+  push:
+    branches:
+      - main
+      - fix-sportsapi-agenda-statistics-20261107
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'wrangler.toml'
+      - 'package.json'
+      - '.github/workflows/sportsapi-tests.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'wrangler.toml'
+      - 'package.json'
+      - '.github/workflows/sportsapi-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test

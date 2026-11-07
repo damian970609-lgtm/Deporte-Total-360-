@@ -28,3 +28,11 @@ crons = ["0 */6 * * *"]
 
 [vars]
 CHANNELS_ADMIN_EMAIL = "damian970609@gmail.com"
+
+[[durable_objects.bindings]]
+name = "SPORTSAPI_RATE_LIMITER"
+class_name = "SportsApiRateLimiter"
+
+[[migrations]]
+tag = "v3-sportsapi-rate-limiter"
+new_sqlite_classes = ["SportsApiRateLimiter"]

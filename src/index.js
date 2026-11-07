@@ -1243,52 +1243,11 @@ function matchFavoriteCompetition(sportId, providerName) {
   return null;
 }
 
-function filterSportsApiFavoriteData(payload, request, route) {
-  const params = new URL(request.url).searchParams;
-  const sportId = params.get("sport");
-  if (!params.has("date") || !sportId || !Array.isArray(payload?.data)) {
-    return payload;
-  }
-
-  const isFixtureList = route.upstream === "fixtures" &&
-    sportId !== "cycling" && sportId !== "motorsport";
-  const isRaceList = route.upstream === "races" &&
-    (sportId === "cycling" || sportId === "motorsport");
-  if (!isFixtureList && !isRaceList) return payload;
-
-  const filtered = [];
-  for (const item of payload.data) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const providerCompetition = isFixtureList
-      ? item.league?.name
-      : sportId === "cycling" ? item.name : item.series?.name;
-    const canonical = matchFavoriteCompetition(sportId, providerCompetition);
-    if (!canonical) continue;
-
-    if (isFixtureList && item.league && typeof item.league === "object") {
-      filtered.push({ ...item, league: { ...item.league, name: canonical } });
-    } else if (isRaceList && sportId === "cycling") {
-      filtered.push({ ...item, name: canonical });
-    } else if (isRaceList && item.series && typeof item.series === "object") {
-      filtered.push({ ...item, series: { ...item.series, name: canonical } });
-    } else {
-      filtered.push(item);
-    }
-  }
-
-  // El filtro de favoritos es estricto: una competición que no aparece
-  // en la selección nunca se devuelve como respaldo. Es preferible una lista
-  // vacía y verificable a mezclar ligas que el usuario no eligió.
-  return {
-    ...payload,
-    data: filtered,
-    meta: {
-      ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
-      count: filtered.length,
-      favoriteCompetitionFilter: true,
-      favoriteCompetitionFilterFallback: false
-    }
-  };
+function filterSportsApiFavoriteData(payload) {
+  // No filtrar por una lista fija del Worker: el catálogo local de la APK
+  // aplica la selección real del usuario. Este filtro previo ocultaba ligas
+  // válidas cuando SportsAPI cambiaba el nombre o añadía competiciones.
+  return payload;
 }
 
 function sportsApiFavoritesResponse() {
@@ -1330,7 +1289,7 @@ async function sportsApiProxy(request,env,route) {
   if(cached) {
     try {
       const cachedPayload = await cached.json();
-      return json(filterSportsApiFavoriteData(cachedPayload, request, route), 200, {
+      return json(cachedPayload, 200, {
         "Cache-Control": cached.headers.get("Cache-Control") || "public, max-age=120",
         "X-Data-Source": "cache"
       });
@@ -1339,15 +1298,66 @@ async function sportsApiProxy(request,env,route) {
     }
   }
   try {
+    // Límite global por cuenta: la clave es compartida por todos los usuarios.
+    // El Durable Object asigna una ranura cada 6,1 s (máximo 10 peticiones/min).
+    if (env.SPORTSAPI_RATE_LIMITER) {
+      const limiterId = env.SPORTSAPI_RATE_LIMITER.idFromName("sportsapi-account-free");
+      const limiter = env.SPORTSAPI_RATE_LIMITER.get(limiterId);
+      const slotResponse = await limiter.fetch("https://sportsapi-rate-limiter.internal/acquire");
+      if (!slotResponse.ok) {
+        return json({error:{code:"sportsapi_rate_limiter_unavailable",message:"No se pudo reservar una consulta segura de SportsAPI."}},503,{"Retry-After":"30"});
+      }
+      const slot = await slotResponse.json();
+      if (Number(slot.waitMs) > 0) {
+        await new Promise(resolve => setTimeout(resolve, Number(slot.waitMs)));
+      }
+      // Otra petición puede haber llenado la caché mientras esta esperaba.
+      const afterWaitCache = await cacheMatch(cache, cacheKey);
+      if (afterWaitCache) {
+        const cachedPayload = await afterWaitCache.json();
+        return json(cachedPayload, 200, {
+          "Cache-Control": afterWaitCache.headers.get("Cache-Control") || "public, max-age=120",
+          "X-Data-Source": "cache"
+        });
+      }
+    }
     const upstream=await fetch(upstreamUrl,{method:"GET",headers:{"Authorization":"Bearer "+apiKey,"Accept":"application/json"}});
     const body=await upstream.text(); let parsed;
     try { parsed=JSON.parse(body); } catch { return json({error:{code:"invalid_upstream_response",message:"SportsAPI devolvió una respuesta no JSON."}},502); }
     if(!upstream.ok) { const retry=upstream.headers.get("Retry-After"); return json(parsed,upstream.status,{"Cache-Control":"no-store",...(retry?{"Retry-After":retry}:{})}); }
-    const ttl=route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"?3600:route.upstream==="livescores"?15:route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/")?45:120;
-    const filteredPayload = filterSportsApiFavoriteData(parsed, request, route);
-    const response=json(filteredPayload,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
+    const requestDate = incoming.searchParams.get("date");
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const dateTtl = requestDate && requestDate < todayUtc
+      ? 21600
+      : requestDate === todayUtc ? 1800 : 21600;
+    const ttl = route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"
+      ? 3600
+      : route.upstream==="livescores" ? 15
+      : route.upstream==="fixtures"||route.upstream==="races" ? dateTtl
+      : route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/") ? 120
+      : 120;
+    const response=json(parsed,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
     await cachePut(cache,cacheKey,response.clone()); return response;
   } catch { return json({error:{code:"upstream_unavailable",message:"No se pudo conectar con SportsAPI."}},503,{"Retry-After":"30"}); }
+}
+
+export class SportsApiRateLimiter {
+  constructor(state) {
+    this.state = state;
+    this.nextAllowedAt = 0;
+    this.ready = state.blockConcurrencyWhile(async () => {
+      this.nextAllowedAt = Number(await state.storage.get("nextAllowedAt")) || 0;
+    });
+  }
+
+  async fetch() {
+    await this.ready;
+    const now = Date.now();
+    const slotAt = Math.max(now, this.nextAllowedAt);
+    this.nextAllowedAt = slotAt + 6100;
+    await this.state.storage.put("nextAllowedAt", this.nextAllowedAt);
+    return json({ waitMs: Math.max(0, slotAt - now), intervalMs: 6100 });
+  }
 }
 
 export { ChannelCatalogRoom };
