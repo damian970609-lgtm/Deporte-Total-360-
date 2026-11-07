@@ -1,6 +1,6 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import worker, { SportsApiRateLimiter } from "../src/index.js";
 import { ChannelCatalogRoom, detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
@@ -493,7 +493,7 @@ test("proxy SportsAPI.app valida el deporte antes de llamar al proveedor", async
   assert.equal(called, false);
 });
 
-test("SportsAPI filtra partidos a las competiciones favoritas masculinas y femeninas", async () => {
+test("SportsAPI entrega las ligas completas para que la APK aplique los favoritos del usuario", async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     data: [
       { id: 11, league: { id: 1, name: "Premier League" } },
@@ -512,13 +512,13 @@ test("SportsAPI filtra partidos a las competiciones favoritas masculinas y femen
 
   assert.equal(response.status, 200);
   assert.deepEqual(body.data.map(item => item.league.name), [
-    "Premier League", "LaLiga EA SPORTS", "NWSL"
+    "Premier League", "Championship", "LaLiga", "NWSL"
   ]);
-  assert.equal(body.meta.count, 3);
-  assert.equal(body.meta.favoriteCompetitionFilter, true);
+  assert.equal(body.meta.count, 4);
+  assert.equal(body.meta.favoriteCompetitionFilter, undefined);
 });
 
-test("SportsAPI no devuelve ligas ajenas cuando ninguna coincide con favoritos", async () => {
+test("SportsAPI no descarta ligas nuevas que todavía no están en el catálogo fijo", async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     data: [
       { id: 51, league: { id: 51, name: "Eredivisie" } },
@@ -534,13 +534,11 @@ test("SportsAPI no devuelve ligas ajenas cuando ninguna coincide con favoritos",
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  assert.deepEqual(body.data, []);
-  assert.equal(body.meta.count, 0);
-  assert.equal(body.meta.favoriteCompetitionFilter, true);
-  assert.equal(body.meta.favoriteCompetitionFilterFallback, false);
+  assert.deepEqual(body.data.map(item => item.league.name), ["Eredivisie", "Liga MX"]);
+  assert.equal(body.meta.count, 2);
 });
 
-test("SportsAPI filtra ciclismo por nombre de carrera y motor por serie", async () => {
+test("SportsAPI conserva todas las carreras para que la APK filtre por favoritas", async () => {
   globalThis.fetch = async url => {
     const upstream = new URL(url);
     if (upstream.pathname.endsWith("/races")) {
@@ -569,7 +567,7 @@ test("SportsAPI filtra ciclismo por nombre de carrera y motor por serie", async 
     { SPORTAPI_API_KEY: "test" }
   );
   const cyclingBody = await cycling.json();
-  assert.deepEqual(cyclingBody.data.map(item => item.name), ["Tour de France"]);
+  assert.deepEqual(cyclingBody.data.map(item => item.name), ["Tour de France", "Paris-Nice"]);
   assert.equal(cyclingBody.data[0].series.name, "Cycling Men");
 
   const motor = await worker.fetch(
@@ -577,10 +575,10 @@ test("SportsAPI filtra ciclismo por nombre de carrera y motor por serie", async 
     { SPORTAPI_API_KEY: "test" }
   );
   const motorBody = await motor.json();
-  assert.deepEqual(motorBody.data.map(item => item.series.name), ["Formula 1"]);
+  assert.deepEqual(motorBody.data.map(item => item.series.name), ["Formula 1", "NASCAR Cup Series"]);
 });
 
-test("SportsAPI filtra también una respuesta sin filtrar que ya estuviera en caché", async () => {
+test("SportsAPI conserva todas las ligas de una respuesta que ya estuviera en caché", async () => {
   const cacheEntries = installCache();
   const url = "https://api.sportsapi.app/v2/fixtures?date=2026-11-03&sport=football&page=0";
   cacheEntries.set(url, new Response(JSON.stringify({
@@ -604,9 +602,24 @@ test("SportsAPI filtra también una respuesta sin filtrar que ya estuviera en ca
   const body = await response.json();
 
   assert.equal(upstreamCalled, false);
-  assert.deepEqual(body.data.map(item => item.league.name), ["Premier League"]);
-  assert.equal(body.meta.favoriteCompetitionFilter, true);
+  assert.deepEqual(body.data.map(item => item.league.name), ["Premier League", "Championship"]);
   assert.equal(response.headers.get("X-Data-Source"), "cache");
+});
+
+test("el limitador global reserva una ranura por consulta y mantiene el intervalo entre llamadas", async () => {
+  const values = new Map();
+  const state = {
+    storage: {
+      async get(key) { return values.get(key); },
+      async put(key, value) { values.set(key, value); }
+    },
+    blockConcurrencyWhile(callback) { return callback(); }
+  };
+  const limiter = new SportsApiRateLimiter(state);
+  const first = await limiter.fetch();
+  const second = await limiter.fetch();
+  assert.equal((await first.json()).waitMs, 0);
+  assert.ok((await second.json()).waitMs >= 6000);
 });
 
 test("proxy SportsAPI.app admite resultados de carreras con sesión", async () => {
