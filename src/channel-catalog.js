@@ -760,7 +760,7 @@ export async function handleChannelRoutes(request, env, path) {
     });
   }
 
-  const classification = path.match(/^\\/api\\/channels\\/admin\\/channels\\/([a-zA-Z0-9_-]{1,100})\\/classification$/);
+  const classification = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})\/classification$/);
   if (classification && method === "PATCH") {
     let payload;
     try { payload = await request.json(); } catch {
@@ -1300,7 +1300,7 @@ export class ChannelCatalogRoom {
       return response({ updated: true, visible });
     }
 
-    const classification = path.match(/^\\/classification\\/([a-zA-Z0-9_-]{1,100})$/);
+    const classification = path.match(/^\/classification\/([a-zA-Z0-9_-]{1,100})$/);
     if (classification && request.method === "PATCH") {
       let payload;
       try { payload = await request.json(); } catch {
