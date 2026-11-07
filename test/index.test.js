@@ -1,6 +1,6 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import worker, { SportsApiRateLimiter } from "../src/index.js";
 import { ChannelCatalogRoom, detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
@@ -560,6 +560,43 @@ test("SportsAPI canonicaliza variantes largas del nombre comercial de una liga",
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.deepEqual(body.data.map(item => item.league.name), ["LaLiga EA SPORTS"]);
+});
+
+
+test("SportsApiRateLimiter serializa peticiones y deja al menos 6,2 segundos", async () => {
+  const storage = new Map();
+  const state = {
+    storage: {
+      async get(key) { return storage.get(key); },
+      async put(key, value) { storage.set(key, value); }
+    },
+    blockConcurrencyWhile(callback) { return callback(); }
+  };
+  const limiter = new SportsApiRateLimiter(state);
+  const first = await limiter.fetch();
+  const second = await limiter.fetch();
+  const firstBody = await first.json();
+  const secondBody = await second.json();
+  assert.equal(first.status, 200);
+  assert.equal(firstBody.waitMs, 0);
+  assert.equal(second.status, 200);
+  assert.ok(secondBody.waitMs >= 6000 && secondBody.waitMs <= 6200);
+});
+
+test("SportsAPI admite los filtros oficiales de categoría y país", async () => {
+  let capturedUrl;
+  globalThis.fetch = async url => {
+    capturedUrl = new URL(url);
+    return new Response(JSON.stringify({
+      data: [], meta: { count: 0, hasNextPage: false }
+    }), { status: 200 });
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&country=ES"),
+    sportsApiTestEnv()
+  );
+  assert.equal(response.status, 200);
+  assert.equal(capturedUrl.searchParams.get("country"), "ES");
 });
 
 test("el proxy reserva una ranura global antes de consultar SportsAPI", async () => {
