@@ -1211,7 +1211,7 @@ export default {
     if (!env.CHANNEL_CATALOG) return;
     const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
     const stub = env.CHANNEL_CATALOG.get(id);
-    ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/refresh", { method: "POST" })));
+    ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/scheduled-refresh", { method: "POST" })));
   },
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
