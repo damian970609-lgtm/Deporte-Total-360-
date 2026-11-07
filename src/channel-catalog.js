@@ -320,7 +320,7 @@ function parseGenericXmlPlaylist(text, sourceUrl) {
     const attributes = match[1] || "";
     const body = match[2] || "";
     const attr = name => {
-      const found = attributes.match(new RegExp(name + "\\s*=\\s*(['"])([\\s\\S]*?)\\1", "i"));
+      const found = attributes.match(new RegExp(name + "\\s*=\\s*(['\\\"])([\\s\\S]*?)\\1", "i"));
       return found ? decodeXmlEntities(found[2]) : "";
     };
     const tag = names => {
