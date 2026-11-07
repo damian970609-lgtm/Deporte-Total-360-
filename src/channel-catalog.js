@@ -263,6 +263,87 @@ function parseJsonPlaylist(text, sourceUrl) {
   return channels;
 }
 
+function parseCsvRecord(line) {
+  const values = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if ((char === "," || char === ";") && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+  values.push(value.trim());
+  return values;
+}
+
+function parseCsvPlaylist(text, sourceUrl) {
+  const lines = text.split(/\r?\n/).filter(line => line.trim() && !line.trim().startsWith("#"));
+  if (lines.length === 0) return [];
+  const first = parseCsvRecord(lines[0]).map(value => value.toLowerCase().replace(/[\s_-]/g, ""));
+  const findColumn = names => first.findIndex(value => names.includes(value));
+  const nameColumn = findColumn(["name", "title", "channel", "channelname", "displayname"]);
+  const urlColumn = findColumn(["url", "stream", "streamurl", "src", "link", "file", "directsource"]);
+  const groupColumn = findColumn(["group", "grouptitle", "category", "genre"]);
+  const logoColumn = findColumn(["logo", "logourl", "tvglogo"]);
+  const hasHeader = urlColumn >= 0;
+  const channels = [];
+  for (let index = hasHeader ? 1 : 0; index < lines.length; index++) {
+    const columns = parseCsvRecord(lines[index]);
+    const url = hasHeader ? columns[urlColumn] : columns[1] || columns[0];
+    const name = hasHeader
+      ? (nameColumn >= 0 ? columns[nameColumn] || "" : "")
+      : (columns[1] ? columns[0] : "");
+    const group = groupColumn >= 0 ? columns[groupColumn] || "" : "";
+    const logo = logoColumn >= 0 ? columns[logoColumn] || "" : "";
+    const channel = channelFromPlaylistEntry(name, url, sourceUrl, group, logo);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
+  }
+  return channels;
+}
+
+function parseGenericXmlPlaylist(text, sourceUrl) {
+  const channels = [];
+  const blocks = /<(?:entry|item|channel|track|media)\b([^>]*)>([\s\S]*?)<\/(?:entry|item|channel|track|media)>/gi;
+  for (const match of text.matchAll(blocks)) {
+    const attributes = match[1] || "";
+    const body = match[2] || "";
+    const attr = name => {
+      const found = attributes.match(new RegExp(name + "\\s*=\\s*(['"])([\\s\\S]*?)\\1", "i"));
+      return found ? decodeXmlEntities(found[2]) : "";
+    };
+    const tag = names => {
+      for (const name of names) {
+        const found = body.match(new RegExp("<" + name + "\\b[^>]*>([\\s\\S]*?)<\\/" + name + ">", "i"));
+        if (found) return decodeXmlEntities(found[1].trim());
+      }
+      return "";
+    };
+    const ref = body.match(/<ref\b[^>]*\bhref\s*=\s*(['"])([\s\S]*?)\1/i);
+    const streamUrl = attr("url") || attr("src") || attr("href") ||
+      tag(["location", "url", "stream", "stream-url", "src"]) ||
+      (ref ? decodeXmlEntities(ref[2].trim()) : "");
+    const name = attr("name") || attr("title") || tag(["title", "name", "display-name"]);
+    const logo = attr("logo") || attr("tvg-logo") || tag(["image", "logo"]);
+    const group = attr("group-title") || tag(["group-title", "category", "genre"]);
+    const channel = channelFromPlaylistEntry(name, streamUrl, sourceUrl, group, logo);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
+  }
+  return channels;
+}
+
 function parsePlainTextPlaylist(text, sourceUrl) {
   const channels = [];
   for (const rawLine of text.split(/\r?\n/)) {
@@ -308,11 +389,19 @@ export function parsePlaylist(text, sourceUrl) {
   if (/^\[playlist\]/i.test(normalized)) {
     return { format: "pls", channels: parsePls(normalized, sourceUrl) };
   }
-  if (/^<\?xml|^<(?:(?:[a-z0-9_-]+):)?playlist\b/i.test(normalized)) {
-    return { format: "xspf", channels: parseXspf(normalized, sourceUrl) };
+  if (/^<\?xml|^<(?:playlist|asx|tv|mpd|root|channels|streams)\b/i.test(normalized)) {
+    const xspf = parseXspf(normalized, sourceUrl);
+    const channels = xspf.length ? xspf : parseGenericXmlPlaylist(normalized, sourceUrl);
+    return { format: xspf.length ? "xspf" : "xml", channels };
   }
   if (normalized.startsWith("{") || normalized.startsWith("[")) {
     return { format: "json", channels: parseJsonPlaylist(normalized, sourceUrl) };
+  }
+  const firstLine = normalized.split(/\r?\n/).find(line => line.trim()) || "";
+  const isCsvHeader = /(?:^|[,;])\s*(?:name|title|channel|url|stream|stream_url)(?:\s*[,;]|$)/i.test(firstLine);
+  const filePath = new URL(sourceUrl).pathname.toLowerCase();
+  if (isCsvHeader || filePath.endsWith(".csv")) {
+    return { format: "csv", channels: parseCsvPlaylist(normalized, sourceUrl) };
   }
   return { format: "txt", channels: parsePlainTextPlaylist(normalized, sourceUrl) };
 }
@@ -362,7 +451,7 @@ async function fetchPublicPlaylist(sourceUrl) {
 
 async function readTextLimited(sourceResponse) {
   const declared = Number(sourceResponse.headers.get("Content-Length") || 0);
-  if (declared > MAX_PLAYLIST_BYTES) throw new Error("La lista supera el límite de 12 MB.");
+  if (declared > MAX_PLAYLIST_BYTES) throw new Error("La lista supera el límite de 25 MB.");
   if (!sourceResponse.body) return "";
   const reader = sourceResponse.body.getReader();
   const chunks = [];
