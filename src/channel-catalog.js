@@ -616,7 +616,7 @@ export async function handleChannelRoutes(request, env, path) {
     });
   }
 
-  const channelRemoval = path.match(/^\\/api\\/channels\\/admin\\/channels\\/([a-zA-Z0-9_-]{1,100})$/);
+  const channelRemoval = path.match(/^\/api\/channels\/admin\/channels\/([a-zA-Z0-9_-]{1,100})$/);
   if (channelRemoval && method === "DELETE") {
     return callCatalog(env, "/channels/" + encodeURIComponent(channelRemoval[1]), "DELETE");
   }
