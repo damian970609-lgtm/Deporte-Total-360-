@@ -133,7 +133,16 @@ jobs:
           if (missing.length) throw new Error("Faltan deportes en el catálogo: " + missing.join(", "));
           if (!Array.isArray(favorites.sports) || favorites.sports.length !== 10) throw new Error("El catálogo SportsAPI.app no devolvió los diez deportes favoritos.");
           if (!Array.isArray(fixtures.data)) throw new Error("SportsAPI no devolvió data[] en la ruta real de partidos.");
+          const appReadableFixtures = fixtures.data.filter((item) =>
+            item && Number.isFinite(Number(item.id)) &&
+            typeof item.startTime === "string" &&
+            Number.isFinite(Date.parse(item.startTime))
+          );
+          if (fixtures.data.length > 0 && appReadableFixtures.length === 0) {
+            throw new Error("Los partidos de SportsAPI no incluyen id y startTime en el formato que consume Flutter.");
+          }
           console.log("Worker online; OAuth, canales, deportes, favoritos y ruta real de fixtures verificados.");
           console.log("Partidos recibidos en la consulta de prueba:", fixtures.data.length);
+          console.log("Partidos con id y startTime válidos para Flutter:", appReadableFixtures.length);
           console.log("Mensajes de chat disponibles:", Array.isArray(chat.messages) ? chat.messages.length : "chat temporalmente no disponible");
           NODE
