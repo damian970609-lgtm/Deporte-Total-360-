@@ -445,6 +445,28 @@ test("SportsAPI filtra partidos a las competiciones favoritas masculinas y femen
   assert.equal(body.meta.favoriteCompetitionFilter, true);
 });
 
+test("SportsAPI conserva la agenda si ninguna competición coincide con el catálogo exacto", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    data: [
+      { id: 51, league: { id: 51, name: "Eredivisie" } },
+      { id: 52, league: { id: 52, name: "Liga MX" } }
+    ],
+    meta: { count: 2, hasNextPage: false }
+  }), { status: 200 });
+
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&page=0"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data.map(item => item.id), [51, 52]);
+  assert.equal(body.meta.count, 2);
+  assert.equal(body.meta.favoriteCompetitionFilter, false);
+  assert.equal(body.meta.favoriteCompetitionFilterFallback, true);
+});
+
 test("SportsAPI filtra ciclismo por nombre de carrera y motor por serie", async () => {
   globalThis.fetch = async url => {
     const upstream = new URL(url);
