@@ -112,8 +112,12 @@ Rutas principales:
 
 El adaptador valida rutas, deportes y parámetros, envía Authorization: Bearer
 desde Cloudflare, conserva el sobre JSON data/meta, respeta Retry-After y usa
-caché para limitar consultas. La agenda solicita una página por deporte; la
-cobertura de cada competición depende del catálogo y del plan contratado.
+una caché con vencimientos diferenciados: tres minutos para el día actual,
+quince minutos para fechas futuras y seis horas para fechas pasadas. La APK
+puede enviar `refresh=1` para saltarse la caché del proxy durante una actualización
+manual; esa instrucción nunca se reenvía a SportsAPI. La Agenda sigue las páginas
+indicadas por `meta.hasNextPage`, tanto en encuentros como en carreras. La
+cobertura depende de los deportes, competiciones y plan contratados al proveedor.
 La lista favorita es la configuración deseada, no una garantía de que cada
 torneo tenga fixtures publicados en el proveedor.
 El Worker aplica una lista permitida de competiciones en las respuestas diarias de partidos y carreras. Se excluyen las ligas y carreras no seleccionadas antes de entregar la agenda a la APK. En ciclismo, se filtra por el nombre de cada carrera, porque la serie del proveedor agrupa únicamente el calendario masculino o femenino.
