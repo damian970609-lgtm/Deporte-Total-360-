@@ -123,11 +123,15 @@ repositorio del Worker. El workflow lo instala en Cloudflare como secreto y
 verifica sportsapi_configured y los diez deportes favoritos. Si el secreto ya
 existe solo en otro repositorio, también debe configurarse aquí.
 
-## Chat público
+## Chat privado de compradores
 
-La aplicación usa una única sala compartida implementada con un Durable Object SQLite (`PublicChatRoom`). El historial conserva los últimos 120 mensajes, admite alias de hasta 24 caracteres y mensajes de hasta 500 caracteres, y aplica un límite básico de frecuencia por dirección IP en memoria. Los alias no están autenticados ni verificados; la app advierte a los usuarios que no publiquen datos personales. No se guardan direcciones IP en los mensajes.
+La sala `PublicChatRoom` es una comunidad compartida, pero no es pública: `GET /api/chat/messages` y `POST /api/chat/messages` requieren un ID token de Google válido para el mismo cliente OAuth configurado en la APK y en Cloudflare. El Worker comprueba que el correo verificado tenga una licencia `paid` con estado `active` en el registro central de licencias. Las cuentas sin licencia, con licencia gratuita o revocada reciben HTTP 403. La cuenta administradora configurada en `CHANNELS_ADMIN_EMAIL` conserva acceso de propietario y permisos de moderación.
 
-El Durable Object está incluido en `wrangler.toml` con una migración SQLite `v1-public-chat`. El despliegue de producción provisiona esa clase al publicar el Worker.
+Cada petición valida la identidad en el servidor; nunca se confía en un correo, ID de usuario o rol enviado por Flutter. El Worker reemplaza los encabezados internos de identidad antes de llamar al Durable Object. Los mensajes almacenan internamente el ID de Google para asociar un alias estable a cada comprador, pero ese identificador no se devuelve a los demás miembros. El alias se fija con el primer mensaje válido de esa cuenta.
+
+El historial conserva los últimos 120 mensajes en SQLite. Los alias admiten hasta 24 caracteres y los mensajes hasta 500. El límite de frecuencia es de un mensaje cada dos segundos por cuenta y se conserva en almacenamiento del Durable Object, no solo en memoria. La cuenta propietaria puede eliminar mensajes mediante `DELETE /api/chat/messages/{id}`; la eliminación es moderada y deja un aviso visible en el historial, sin exponer el contenido anterior.
+
+El Durable Object está incluido en `wrangler.toml` con la migración SQLite `v1-public-chat`. El despliegue de producción provisiona esa clase al publicar el Worker. Las pruebas cubren verificación de licencia, bloqueo de cuentas gratuitas/revocadas, separación entre miembros y propietario, límites de mensajes y moderación.
 
 ## Seguridad
 
