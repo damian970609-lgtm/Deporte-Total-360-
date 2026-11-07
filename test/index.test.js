@@ -1200,10 +1200,12 @@ test("rechaza formatos legibles que no contienen señales multimedia compatibles
 
 
 test("un fallo del Durable Object de chat no derriba el Worker y responde 503 controlado", async () => {
-  const previousFetch = globalThis.fetch;
+  installChatAuthorizationTestFetch();
   const response = await worker.fetch(
-    request("/api/chat/messages"),
+    authenticatedChatRequest("/api/chat/messages"),
     {
+      GOOGLE_OAUTH_CLIENT_ID: "dt360-test-client.apps.googleusercontent.com",
+      CHANNELS_ADMIN_EMAIL: "owner@example.com",
       PUBLIC_CHAT_ROOM: {
         idFromName: () => "public-chat",
         get: () => ({
@@ -1217,7 +1219,6 @@ test("un fallo del Durable Object de chat no derriba el Worker y responde 503 co
   const body = await response.json();
   assert.equal(response.status, 503);
   assert.equal(body.error.code, "chat_temporarily_unavailable");
-  globalThis.fetch = previousFetch;
 });
 
 
@@ -1397,7 +1398,8 @@ test("el dueño puede moderar mensajes usando la cuenta administradora verificad
   installChatAuthorizationTestFetch("owner@example.com", "owner-google-sub");
   const { env, roomRequests, catalogRequests } = privateChatTestEnv({
     email: "owner@example.com",
-    sub: "owner-google-sub"
+    sub: "owner-google-sub",
+    roomResponse: { deleted: true }
   });
   const response = await worker.fetch(
     authenticatedChatRequest("/api/chat/messages/message-123", "DELETE"),
