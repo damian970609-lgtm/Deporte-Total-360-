@@ -1,4 +1,4 @@
-import { ChannelCatalogRoom, handleChannelRoutes } from "./channel-catalog.js";
+import { ChannelCatalogRoom, authorizeChatAccess, handleChannelRoutes } from "./channel-catalog.js";
 
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -660,7 +660,7 @@ function sportsCatalog() {
 
 function cleanChatField(value) {
   // Quita caracteres de control sin alterar tildes, emojis ni alfabetos Unicode.
-  return Array.from(value, (character) => {
+  return Array.from(String(value ?? ""), (character) => {
     const code = character.codePointAt(0);
     return code < 32 || code === 127 ? " " : character;
   }).join("").trim();
@@ -672,27 +672,175 @@ const CHAT_MAX_TEXT_LENGTH = 500;
 const CHAT_RATE_LIMIT_MS = 2000;
 
 /**
- * Sala pública compartida. El historial se conserva en SQLite del Durable Object.
- * Los nombres son alias públicos, no identidades autenticadas.
+ * Sala privada para compradores. La identidad y el rol llegan únicamente
+ * desde el Worker después de verificar Google y la licencia de pago.
+ * El historial conserva los últimos 120 mensajes en SQLite.
  */
 export class PublicChatRoom {
   constructor(state, env) {
     this.state = state;
     this.env = env;
     this.writeQueue = Promise.resolve();
-    this.lastMessageAt = new Map();
   }
 
   async fetch(request) {
     const url = new URL(request.url);
+    const userId = String(request.headers.get("X-Chat-User-Id") || "").trim();
+    const role = request.headers.get("X-Chat-Role") === "admin" ? "admin" : "member";
+    if (!userId || userId.length > 256) {
+      return json({ error: { code: "authentication_required", message: "Inicia sesión con una cuenta autorizada." } }, 401);
+    }
+
+    if (url.pathname === "/messages" && request.method === "GET") {
+      const stored = await this.state.storage.get("messages") || [];
+      const profile = await this.state.storage.get("chat:profile:" + userId);
+      const messages = stored.map(({ authorId, ...message }) => ({
+        ...message,
+        isMine: authorId === userId
+      }));
+      return json({
+        messages,
+        profile: profile ? { name: profile.name } : null,
+        canModerate: role === "admin"
+      }, 200, { "Cache-Control": "no-store" });
+    }
+
+    if (url.pathname === "/reports" && request.method === "GET") {
+      if (role !== "admin") {
+        return json({ error: { code: "moderator_required", message: "Solo el administrador puede consultar las denuncias." } }, 403);
+      }
+      const reports = await this.state.storage.get("reports") || [];
+      const messages = await this.state.storage.get("messages") || [];
+      const publicReports = reports
+        .map(({ reporterId, ...report }) => {
+          const message = messages.find(item => item.id === report.messageId);
+          return {
+            ...report,
+            messageName: message?.name || "Usuario",
+            messageText: message?.deleted ? "Mensaje eliminado por moderación." : (message?.text || "")
+          };
+        })
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return json({ reports: publicReports }, 200, { "Cache-Control": "no-store" });
+    }
+
+    const reportResolutionMatch = url.pathname.match(/^\/reports\/([a-zA-Z0-9_-]{1,100})$/);
+    if (reportResolutionMatch) {
+      if (request.method !== "PATCH") {
+        return json({ error: "Método no permitido" }, 405, { Allow: "PATCH, OPTIONS" });
+      }
+      if (role !== "admin") {
+        return json({ error: { code: "moderator_required", message: "Solo el administrador puede gestionar las denuncias." } }, 403);
+      }
+      let payload;
+      try { payload = await request.json(); } catch {
+        return json({ error: "El cuerpo debe ser JSON válido." }, 400);
+      }
+      const status = String(payload?.status || "");
+      if (!["resolved", "dismissed"].includes(status)) {
+        return json({ error: "El estado debe ser resolved o dismissed." }, 400);
+      }
+      const reports = await this.state.storage.get("reports") || [];
+      const index = reports.findIndex(item => item.id === reportResolutionMatch[1]);
+      if (index < 0) return json({ error: "La denuncia ya no existe." }, 404);
+      reports[index] = {
+        ...reports[index],
+        status,
+        reviewedAt: new Date().toISOString()
+      };
+      await this.state.storage.put("reports", reports);
+      return json({ updated: true, id: reportResolutionMatch[1], status });
+    }
+
+    const reportMatch = url.pathname.match(/^\/messages\/([a-zA-Z0-9_-]{1,100})\/report$/);
+    if (reportMatch) {
+      if (request.method !== "POST") {
+        return json({ error: "Método no permitido" }, 405, { Allow: "POST, OPTIONS" });
+      }
+      let payload;
+      try { payload = await request.json(); } catch {
+        return json({ error: "El cuerpo debe ser JSON válido." }, 400);
+      }
+      const reason = String(payload?.reason || "");
+      if (!["spam", "abuse", "harassment", "other"].includes(reason)) {
+        return json({ error: "Selecciona un motivo de denuncia válido." }, 400);
+      }
+      const operation = this.writeQueue.then(async () => {
+        const messages = await this.state.storage.get("messages") || [];
+        const message = messages.find(item => item.id === reportMatch[1]);
+        if (!message) return { missing: true };
+        if (message.deleted) return { unavailable: true };
+        if (message.authorId === userId) return { ownMessage: true };
+
+        const reports = await this.state.storage.get("reports") || [];
+        if (reports.some(item => item.messageId === message.id && item.reporterId === userId)) {
+          return { duplicate: true };
+        }
+        const profile = await this.state.storage.get("chat:profile:" + userId);
+        const report = {
+          id: crypto.randomUUID(),
+          messageId: message.id,
+          reporterId: userId,
+          reporterName: profile?.name || "Comprador",
+          reason,
+          status: "pending",
+          createdAt: new Date().toISOString()
+        };
+        reports.push(report);
+        if (reports.length > 500) reports.splice(0, reports.length - 500);
+        await this.state.storage.put("reports", reports);
+        return { report };
+      });
+      this.writeQueue = operation.then(() => undefined, () => undefined);
+      try {
+        const result = await operation;
+        if (result.missing) return json({ error: "El mensaje ya no existe." }, 404);
+        if (result.unavailable) return json({ error: "El mensaje ya fue eliminado." }, 409);
+        if (result.ownMessage) return json({ error: "No puedes denunciar tu propio mensaje." }, 400);
+        if (result.duplicate) return json({ error: "Ya has denunciado este mensaje." }, 409);
+        return json({ reported: true, reportId: result.report.id }, 201);
+      } catch {
+        return json({ error: "No se pudo registrar la denuncia. Inténtalo de nuevo." }, 500);
+      }
+    }
+
+    const deleteMatch = url.pathname.match(/^\/messages\/([a-zA-Z0-9_-]{1,100})$/);
+    if (deleteMatch) {
+      if (request.method !== "DELETE") {
+        return json({ error: "Método no permitido" }, 405, { Allow: "DELETE, OPTIONS" });
+      }
+      if (role !== "admin") {
+        return json({ error: { code: "moderator_required", message: "Solo el administrador puede moderar mensajes." } }, 403);
+      }
+      const messageId = deleteMatch[1];
+      const operation = this.writeQueue.then(async () => {
+        const messages = await this.state.storage.get("messages") || [];
+        const index = messages.findIndex(item => item.id === messageId);
+        if (index < 0) return { missing: true };
+        if (messages[index].deleted === true) return { deleted: true };
+        messages[index] = {
+          ...messages[index],
+          text: "Este mensaje fue eliminado por moderación.",
+          deleted: true,
+          deletedAt: new Date().toISOString()
+        };
+        await this.state.storage.put("messages", messages);
+        return { deleted: true };
+      });
+      this.writeQueue = operation.then(() => undefined, () => undefined);
+      try {
+        const result = await operation;
+        if (result.missing) return json({ error: "El mensaje ya no existe." }, 404);
+        return json({ deleted: true, id: messageId }, 200);
+      } catch {
+        return json({ error: "No se pudo moderar el mensaje. Inténtalo de nuevo." }, 500);
+      }
+    }
+
     if (url.pathname !== "/messages") {
       return json({ error: "Ruta del chat no encontrada" }, 404);
     }
     if (request.method === "OPTIONS") return empty(204);
-    if (request.method === "GET") {
-      const messages = await this.state.storage.get("messages") || [];
-      return json({ messages }, 200, { "Cache-Control": "no-store" });
-    }
     if (request.method !== "POST") {
       return json({ error: "Método no permitido" }, 405, { Allow: "GET, POST, OPTIONS" });
     }
@@ -702,11 +850,6 @@ export class PublicChatRoom {
       return json({ error: "El mensaje enviado es demasiado grande" }, 413);
     }
 
-    const contentType = request.headers.get("Content-Type") || "";
-    if (!contentType.toLowerCase().includes("application/json")) {
-      return json({ error: "El chat solo acepta JSON" }, 415);
-    }
-
     let payload;
     try {
       payload = await request.json();
@@ -714,59 +857,74 @@ export class PublicChatRoom {
       return json({ error: "El mensaje no contiene JSON válido" }, 400);
     }
 
-    const name = typeof payload?.name === "string"
-      ? Array.from(cleanChatField(payload.name)).slice(0, CHAT_MAX_NAME_LENGTH).join('')
+    const requestedName = typeof payload?.name === "string"
+      ? Array.from(cleanChatField(payload.name)).slice(0, CHAT_MAX_NAME_LENGTH).join("")
       : "";
     const text = typeof payload?.text === "string"
       ? cleanChatField(payload.text)
       : "";
 
-    if (name.length < 2) {
-      return json({ error: "Escribe un nombre de al menos 2 caracteres" }, 400);
+    if (requestedName.length < 2) {
+      return json({ error: "Escribe un alias de al menos 2 caracteres" }, 400);
     }
     if (!text || Array.from(text).length > CHAT_MAX_TEXT_LENGTH) {
       return json({ error: "El mensaje debe tener entre 1 y 500 caracteres" }, 400);
     }
 
-    // La IP se usa solo en memoria para limitar spam; no se guarda en mensajes.
-    const clientKey = request.headers.get("CF-Connecting-IP") || "anonymous";
-    const now = Date.now();
-    const previous = this.lastMessageAt.get(clientKey) || 0;
-    if (now - previous < CHAT_RATE_LIMIT_MS) {
-      return json(
-        { error: "Espera un momento antes de enviar otro mensaje" },
-        429,
-        { "Retry-After": "2" }
-      );
-    }
-    this.lastMessageAt.set(clientKey, now);
+    // La cola serializa el límite persistente por cuenta, incluso cuando
+    // llegan dos envíos simultáneos o Cloudflare reinicia la instancia.
+    const operation = this.writeQueue.then(async () => {
+      const rateKey = "chat:last-message:" + userId;
+      const previous = Number(await this.state.storage.get(rateKey) || 0);
+      const now = Date.now();
+      if (now - previous < CHAT_RATE_LIMIT_MS) {
+        return { rateLimited: true };
+      }
 
-    const write = this.writeQueue.then(async () => {
+      const profileKey = "chat:profile:" + userId;
+      const profile = await this.state.storage.get(profileKey);
+      const name = profile?.name || requestedName;
+      if (!profile) {
+        await this.state.storage.put(profileKey, { name, createdAt: new Date(now).toISOString() });
+      }
+
       const messages = await this.state.storage.get("messages") || [];
       const message = {
         id: crypto.randomUUID(),
         name,
         text,
-        createdAt: new Date(now).toISOString()
+        createdAt: new Date(now).toISOString(),
+        authorId: userId,
+        deleted: false
       };
       messages.push(message);
       if (messages.length > CHAT_MAX_MESSAGES) {
         messages.splice(0, messages.length - CHAT_MAX_MESSAGES);
       }
       await this.state.storage.put("messages", messages);
-      return message;
+      await this.state.storage.put(rateKey, now);
+      return { message };
     });
-    this.writeQueue = write.then(() => undefined, () => undefined);
+    this.writeQueue = operation.then(() => undefined, () => undefined);
 
     try {
-      const message = await write;
-      return json({ message }, 201, { "Cache-Control": "no-store" });
+      const result = await operation;
+      if (result.rateLimited) {
+        return json(
+          { error: "Espera un momento antes de enviar otro mensaje" },
+          429,
+          { "Retry-After": "2" }
+        );
+      }
+      const { authorId, ...publicMessage } = result.message;
+      return json({ message: { ...publicMessage, isMine: true } }, 201, {
+        "Cache-Control": "no-store"
+      });
     } catch {
       return json({ error: "No se pudo guardar el mensaje. Inténtalo de nuevo." }, 500);
     }
   }
 }
-
 
 function isAllowedLiveMediaUrl(value) {
   try {
@@ -1221,31 +1379,61 @@ export default {
     const incoming = new URL(request.url);
     const path = incoming.pathname.replace(/\/+$/, "") || "/";
 
-    // Una única sala pública compartida por todos los usuarios de la APK.
-    if (path === "/api/chat/messages") {
-      if (request.method !== "GET" && request.method !== "POST") {
-        return json(
-          { error: "Método no permitido" },
-          405,
-          { Allow: "GET, POST, OPTIONS" }
-        );
+    // Chat privado: Google ID token válido + licencia comercial activa.
+    const chatRoute = path.match(/^\/api\/chat\/(messages(?:\/[a-zA-Z0-9_-]{1,100}(?:\/report)?)?|reports(?:\/[a-zA-Z0-9_-]{1,100})?)$/);
+    if (chatRoute) {
+      const endpoint = chatRoute[1];
+      const isMessageList = endpoint === "messages";
+      const isMessageDelete = /^messages\/[a-zA-Z0-9_-]{1,100}$/.test(endpoint);
+      const isMessageReport = /^messages\/[a-zA-Z0-9_-]{1,100}\/report$/.test(endpoint);
+      const isReportsList = endpoint === "reports";
+      const isReportReview = /^reports\/[a-zA-Z0-9_-]{1,100}$/.test(endpoint);
+      const methodAllowed =
+        (isMessageList && ["GET", "POST"].includes(request.method)) ||
+        (isMessageDelete && request.method === "DELETE") ||
+        (isMessageReport && request.method === "POST") ||
+        (isReportsList && request.method === "GET") ||
+        (isReportReview && request.method === "PATCH");
+      if (!methodAllowed) {
+        const allow = isMessageDelete ? "DELETE, OPTIONS" :
+          (isMessageReport ? "POST, OPTIONS" :
+          (isReportsList ? "GET, OPTIONS" :
+          (isReportReview ? "PATCH, OPTIONS" : "GET, POST, OPTIONS")));
+        return json({ error: "Método no permitido" }, 405, { Allow: allow });
+      }
+
+      const access = await authorizeChatAccess(request, env);
+      if (access.error) return access.error;
+      if ((isMessageDelete || isReportsList || isReportReview) && access.role !== "admin") {
+        return json({
+          error: {
+            code: "moderator_required",
+            message: "Solo el administrador puede gestionar mensajes y denuncias."
+          }
+        }, 403);
       }
       if (!env.PUBLIC_CHAT_ROOM) {
-        return json({ error: "La sala de chat todavía no está configurada" }, 503);
+        return json({ error: "La sala privada de Chat todavía no está configurada." }, 503);
       }
+
       const roomId = env.PUBLIC_CHAT_ROOM.idFromName("deporte-total-360-public");
       const room = env.PUBLIC_CHAT_ROOM.get(roomId);
-      const target = new URL("https://public-chat.internal/messages");
+      const target = new URL("https://private-chat.internal/" + endpoint);
       try {
-        const roomResponse = await room.fetch(new Request(target.toString(), request));
+        const forwarded = new Request(target.toString(), request);
+        const headers = new Headers(forwarded.headers);
+        // Se reemplazan los datos de identidad enviados por el cliente.
+        headers.set("X-Chat-User-Id", access.identity.sub);
+        headers.set("X-Chat-Role", access.role);
+        headers.delete("Authorization");
+        const trustedRequest = new Request(forwarded, { headers });
+        const roomResponse = await room.fetch(trustedRequest);
         if (roomResponse.status >= 500) {
-          let detail = "";
-          try { detail = (await roomResponse.clone().text()).slice(0, 500); } catch {}
-          console.error("PublicChatRoom devolvió un error", roomResponse.status, detail);
+          console.error("PublicChatRoom devolvió un error", roomResponse.status);
           return json({
             error: {
               code: "chat_temporarily_unavailable",
-              message: "El chat está temporalmente no disponible. El catálogo de canales sigue funcionando."
+              message: "El Chat está temporalmente no disponible. Inténtalo de nuevo."
             }
           }, 503, { "Retry-After": "15" });
         }
@@ -1255,7 +1443,7 @@ export default {
         return json({
           error: {
             code: "chat_temporarily_unavailable",
-            message: "El chat está temporalmente no disponible. El catálogo de canales sigue funcionando."
+            message: "El Chat está temporalmente no disponible. Inténtalo de nuevo."
           }
         }, 503, { "Retry-After": "15" });
       }

@@ -92,13 +92,13 @@ jobs:
           FIXTURES="$(fetch_json "/api/sportsapi/fixtures?date=$TODAY_UTC&sport=football&page=0")"
           CHAT_FILE="$(mktemp)"
           CHAT_STATUS="$(curl --silent --show-error --max-time 20 -o "$CHAT_FILE" -w '%{http_code}' "$BASE/api/chat/messages")"
-          if [[ "$CHAT_STATUS" == "200" ]]; then
-            CHAT="$(cat "$CHAT_FILE")"
-          else
-            CHAT='{}'
-            echo "::warning::El chat respondió HTTP $CHAT_STATUS; se verifica por separado y no bloquea el catálogo de canales."
+          if [[ "$CHAT_STATUS" != "401" ]]; then
+            echo "::error::El Chat privado debe rechazar solicitudes sin sesión; respondió HTTP $CHAT_STATUS."
             sed -n '1,10p' "$CHAT_FILE" >&2
+            rm -f "$CHAT_FILE"
+            exit 1
           fi
+          CHAT="$(cat "$CHAT_FILE")"
           rm -f "$CHAT_FILE"
           node - "$HEALTH" "$CHANNELS" "$CHAT" "$CHAT_STATUS" "$CHANNELS_QUOTA_EXHAUSTED" "$OAUTH" "$GOOGLE_OAUTH_CLIENT_ID" "$CATALOG" "$FAVORITES" "$FIXTURES" <<'NODE'
           const health = JSON.parse(process.argv[2]);
@@ -123,8 +123,8 @@ jobs:
           if (channelsQuotaExhausted) {
             console.warn("La API de canales no se pudo comprobar porque Cloudflare agotó la cuota diaria gratuita de escrituras.");
           }
-          if (chatStatus === "200" && !Array.isArray(chat.messages)) {
-            throw new Error("El chat respondió 200 sin devolver una lista de mensajes.");
+          if (chatStatus !== "401" || chat.error?.code !== "authentication_required") {
+            throw new Error("El Chat privado no rechazó correctamente la solicitud sin una sesión Google.");
           }
           if (!Array.isArray(catalog.sports)) throw new Error("El catálogo no devolvió sports[].");
           const required = ["football", "basketball", "nba", "baseball", "american-football", "formula-1", "hockey", "handball", "rugby", "volleyball", "mma", "afl"];
@@ -144,5 +144,5 @@ jobs:
           console.log("Worker online; OAuth, canales, deportes, favoritos y ruta real de fixtures verificados.");
           console.log("Partidos recibidos en la consulta de prueba:", fixtures.data.length);
           console.log("Partidos con id y startTime válidos para Flutter:", appReadableFixtures.length);
-          console.log("Mensajes de chat disponibles:", Array.isArray(chat.messages) ? chat.messages.length : "chat temporalmente no disponible");
+          console.log("Acceso privado del Chat: verificado (HTTP 401 sin sesión Google).");
           NODE

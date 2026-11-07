@@ -16,121 +16,291 @@ function makeRoom() {
   };
 }
 
-function chatRequest(method, body, ip = "192.0.2.1") {
-  return new Request("https://room.internal/messages", {
+function chatRequest(method, body, userId = "buyer-google-sub", role = "member", path = "/messages") {
+  return new Request("https://room.internal" + path, {
     method,
     headers: {
       "Content-Type": "application/json",
-      "CF-Connecting-IP": ip
+      "X-Chat-User-Id": userId,
+      "X-Chat-Role": role
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
 }
 
-test("una sala vacía devuelve una lista de mensajes vacía", async () => {
+test("rechaza llamadas internas sin identidad verificada", async () => {
   const { room } = makeRoom();
-  const response = await room.fetch(chatRequest("GET"));
-  assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).messages, []);
+  const response = await room.fetch(new Request("https://room.internal/messages"));
+  assert.equal(response.status, 401);
 });
 
-test("guarda mensajes y los devuelve en consultas posteriores", async () => {
+test("una sala autorizada devuelve una lista vacía y el permiso de moderación", async () => {
   const { room } = makeRoom();
+  const member = await room.fetch(chatRequest("GET", undefined, "buyer-1", "member"));
+  const memberBody = await member.json();
+  assert.equal(member.status, 200);
+  assert.deepEqual(memberBody.messages, []);
+  assert.equal(memberBody.canModerate, false);
+
+  const admin = await room.fetch(chatRequest("GET", undefined, "owner-1", "admin"));
+  const adminBody = await admin.json();
+  assert.equal(admin.status, 200);
+  assert.equal(adminBody.canModerate, true);
+});
+
+test("guarda mensajes, conserva la identidad privada y no expone el ID Google", async () => {
+  const { room, storage } = makeRoom();
   const sent = await room.fetch(chatRequest("POST", {
-    name: "Damian",
-    text: "¡Hola a todos!"
-  }));
+    name: "Damián",
+    text: "¡Hola a todos! ⚽🔥"
+  }, "buyer-google-sub"));
   const sentBody = await sent.json();
 
   assert.equal(sent.status, 201);
-  assert.equal(sentBody.message.name, "Damian");
-  assert.equal(sentBody.message.text, "¡Hola a todos!");
+  assert.equal(sentBody.message.name, "Damián");
+  assert.equal(sentBody.message.text, "¡Hola a todos! ⚽🔥");
+  assert.equal(sentBody.message.isMine, true);
   assert.ok(sentBody.message.id);
   assert.ok(sentBody.message.createdAt);
+  assert.equal(Object.hasOwn(sentBody.message, "authorId"), false);
 
-  const listed = await room.fetch(chatRequest("GET"));
-  const messages = (await listed.json()).messages;
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].id, sentBody.message.id);
+  const stored = await storage.get("messages");
+  assert.equal(stored[0].authorId, "buyer-google-sub");
+
+  const listed = await room.fetch(chatRequest("GET", undefined, "another-buyer"));
+  const listedBody = await listed.json();
+  assert.equal(listedBody.messages.length, 1);
+  assert.equal(listedBody.messages[0].isMine, false);
+  assert.equal(Object.hasOwn(listedBody.messages[0], "authorId"), false);
 });
 
-test("rechaza alias y mensajes vacíos o demasiado largos", async () => {
+test("el alias queda asociado a la cuenta y no se puede suplantar cambiándolo", async () => {
+  const { room } = makeRoom();
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow();
+    const first = await room.fetch(chatRequest("POST", {
+      name: "JugadorUno",
+      text: "Primer mensaje"
+    }, "buyer-unique"));
+    Date.now = () => originalNow() + 3000;
+    const second = await room.fetch(chatRequest("POST", {
+      name: "Administrador",
+      text: "Segundo mensaje"
+    }, "buyer-unique"));
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.equal((await second.json()).message.name, "JugadorUno");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("limita mensajes repetidos por cuenta, no por dirección IP", async () => {
+  const { room } = makeRoom();
+  const first = await room.fetch(chatRequest("POST", {
+    name: "Persona",
+    text: "Primer mensaje"
+  }, "buyer-rate-1"));
+  const second = await room.fetch(chatRequest("POST", {
+    name: "Persona",
+    text: "Segundo mensaje"
+  }, "buyer-rate-1"));
+  const otherBuyer = await room.fetch(chatRequest("POST", {
+    name: "Otra persona",
+    text: "Mensaje de otra cuenta"
+  }, "buyer-rate-2"));
+
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 429);
+  assert.equal(second.headers.get("Retry-After"), "2");
+  assert.equal(otherBuyer.status, 201);
+});
+
+test("rechaza alias, mensajes vacíos y mensajes demasiado largos", async () => {
   const { room } = makeRoom();
   const shortName = await room.fetch(chatRequest("POST", {
     name: "A",
     text: "Hola"
-  }, "192.0.2.2"));
+  }, "buyer-short-name"));
   const emptyText = await room.fetch(chatRequest("POST", {
     name: "Persona",
     text: "   "
-  }, "192.0.2.3"));
+  }, "buyer-empty-text"));
   const longText = await room.fetch(chatRequest("POST", {
     name: "Persona",
     text: "x".repeat(501)
-  }, "192.0.2.4"));
+  }, "buyer-long-text"));
 
   assert.equal(shortName.status, 400);
   assert.equal(emptyText.status, 400);
   assert.equal(longText.status, 400);
 });
 
-test("limita mensajes repetidos desde la misma dirección", async () => {
+test("solo el administrador puede retirar un mensaje y la eliminación es visible", async () => {
   const { room } = makeRoom();
-  const first = await room.fetch(chatRequest("POST", {
-    name: "Persona",
-    text: "Primer mensaje"
-  }, "192.0.2.5"));
-  const second = await room.fetch(chatRequest("POST", {
-    name: "Persona",
-    text: "Segundo mensaje"
-  }, "192.0.2.5"));
+  const sent = await room.fetch(chatRequest("POST", {
+    name: "Comprador",
+    text: "Mensaje que requiere moderación"
+  }, "buyer-to-moderate"));
+  const id = (await sent.json()).message.id;
 
-  assert.equal(first.status, 201);
-  assert.equal(second.status, 429);
-  assert.equal(second.headers.get("Retry-After"), "2");
+  const denied = await room.fetch(chatRequest(
+    "DELETE", undefined, "buyer-to-moderate", "member", "/messages/" + id
+  ));
+  assert.equal(denied.status, 403);
+
+  const deleted = await room.fetch(chatRequest(
+    "DELETE", undefined, "owner-1", "admin", "/messages/" + id
+  ));
+  assert.equal(deleted.status, 200);
+
+  const listed = await room.fetch(chatRequest("GET", undefined, "buyer-2"));
+  const message = (await listed.json()).messages[0];
+  assert.equal(message.deleted, true);
+  assert.equal(message.text, "Este mensaje fue eliminado por moderación.");
+  assert.equal(message.isMine, false);
 });
 
-test("el Worker enruta GET y POST a la misma sala pública", async () => {
-  const { room } = makeRoom();
-  const calls = [];
-  const binding = {
-    idFromName(name) {
-      assert.equal(name, "deporte-total-360-public");
-      return "public-room-id";
-    },
-    get(id) {
-      assert.equal(id, "public-room-id");
-      return {
-        fetch(request) {
-          calls.push(request.method);
-          return room.fetch(request);
-        }
-      };
-    }
-  };
+test("el límite conserva solo los últimos 120 mensajes", async () => {
+  const { room, storage } = makeRoom();
+  const seed = Array.from({ length: 125 }, (_, index) => ({
+    id: "seed-" + index,
+    name: "Comprador",
+    text: "Mensaje " + index,
+    createdAt: new Date(1700000000000 + index).toISOString(),
+    authorId: "buyer-seed",
+    deleted: false
+  }));
+  await storage.put("messages", seed);
 
-  const get = await worker.fetch(
-    new Request("https://worker.example/api/chat/messages"),
-    { PUBLIC_CHAT_ROOM: binding }
-  );
-  const post = await worker.fetch(
-    new Request("https://worker.example/api/chat/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Invitado", text: "Desde la APK" })
-    }),
-    { PUBLIC_CHAT_ROOM: binding }
-  );
-
-  assert.equal(get.status, 200);
-  assert.equal(post.status, 201);
-  assert.deepEqual(calls, ["GET", "POST"]);
+  // Una publicación nueva normaliza el historial al límite del producto.
+  const sent = await room.fetch(chatRequest("POST", {
+    name: "Comprador",
+    text: "Nuevo mensaje"
+  }, "buyer-limit"));
+  assert.equal(sent.status, 201);
+  const messages = await storage.get("messages");
+  assert.equal(messages.length, 120);
+  assert.equal(messages.at(-1).text, "Nuevo mensaje");
 });
 
-test("POST fuera de la ruta del chat sigue prohibido", async () => {
+test("el Worker no enruta el Chat sin un token Google", async () => {
+  let roomCalled = false;
   const response = await worker.fetch(
-    new Request("https://worker.example/health", { method: "POST" }),
-    {}
+    new Request("https://worker.example/api/chat/messages"),
+    {
+      GOOGLE_OAUTH_CLIENT_ID: "test-client.apps.googleusercontent.com",
+      PUBLIC_CHAT_ROOM: {
+        idFromName: () => "public-room",
+        get: () => ({
+          fetch: async () => {
+            roomCalled = true;
+            return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+          }
+        })
+      }
+    }
   );
-  assert.equal(response.status, 405);
+  assert.equal(response.status, 401);
+  assert.equal(roomCalled, false);
+});
+
+
+test("un comprador puede denunciar un mensaje ajeno una sola vez", async () => {
+  const { room } = makeRoom();
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow();
+    const sent = await room.fetch(chatRequest("POST", {
+      name: "Autor",
+      text: "Mensaje que infringe las reglas"
+    }, "buyer-author"));
+    const messageId = (await sent.json()).message.id;
+
+    Date.now = () => originalNow() + 3000;
+    const report = await room.fetch(chatRequest(
+      "POST",
+      { reason: "abuse" },
+      "buyer-reporter",
+      "member",
+      "/messages/" + messageId + "/report"
+    ));
+    const reportBody = await report.json();
+    assert.equal(report.status, 201);
+    assert.equal(reportBody.reported, true);
+
+    const duplicate = await room.fetch(chatRequest(
+      "POST",
+      { reason: "spam" },
+      "buyer-reporter",
+      "member",
+      "/messages/" + messageId + "/report"
+    ));
+    assert.equal(duplicate.status, 409);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("un comprador no puede denunciar su propio mensaje", async () => {
+  const { room } = makeRoom();
+  const sent = await room.fetch(chatRequest("POST", {
+    name: "Autor",
+    text: "Mi mensaje"
+  }, "buyer-own-report"));
+  const messageId = (await sent.json()).message.id;
+  const report = await room.fetch(chatRequest(
+    "POST",
+    { reason: "other" },
+    "buyer-own-report",
+    "member",
+    "/messages/" + messageId + "/report"
+  ));
+  assert.equal(report.status, 400);
+});
+
+test("solo el administrador puede leer y resolver denuncias", async () => {
+  const { room } = makeRoom();
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow();
+    const sent = await room.fetch(chatRequest("POST", {
+      name: "Autor",
+      text: "Texto denunciado"
+    }, "buyer-report-author"));
+    const messageId = (await sent.json()).message.id;
+    Date.now = () => originalNow() + 3000;
+    await room.fetch(chatRequest(
+      "POST",
+      { reason: "spam" },
+      "buyer-reporting-member",
+      "member",
+      "/messages/" + messageId + "/report"
+    ));
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const denied = await room.fetch(chatRequest("GET", undefined, "buyer-member", "member", "/reports"));
+  assert.equal(denied.status, 403);
+
+  const admin = await room.fetch(chatRequest("GET", undefined, "owner", "admin", "/reports"));
+  const report = (await admin.json()).reports[0];
+  assert.equal(admin.status, 200);
+  assert.equal(report.reason, "spam");
+  assert.equal(report.status, "pending");
+  assert.equal(report.messageText, "Texto denunciado");
+  assert.equal(Object.hasOwn(report, "reporterId"), false);
+
+  const resolved = await room.fetch(chatRequest(
+    "PATCH",
+    { status: "resolved" },
+    "owner",
+    "admin",
+    "/reports/" + report.id
+  ));
+  assert.equal(resolved.status, 200);
+  assert.equal((await resolved.json()).status, "resolved");
 });

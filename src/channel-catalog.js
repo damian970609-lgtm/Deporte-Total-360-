@@ -548,6 +548,58 @@ async function callCatalog(env, path, method = "GET", payload = null, headers = 
   }
 }
 
+/**
+ * Autoriza el Chat con la misma identidad Google y el registro de licencias
+ * que ya protege la APK completa. Solo licencias pagadas activas y el dueño
+ * pueden leer o publicar. El pase gratuito habilita la APK, pero no el Chat.
+ */
+export async function authorizeChatAccess(request, env) {
+  const identity = await googleIdentity(request, env);
+  if (identity.error) return { error: identity.error };
+
+  if (isAdmin(identity, env)) {
+    return { identity, role: "admin" };
+  }
+
+  const licenseResponse = await callCatalog(
+    env,
+    "/licenses/check",
+    "GET",
+    null,
+    { "X-License-Email": identity.email }
+  );
+  if (!licenseResponse.ok) return { error: licenseResponse };
+
+  let license;
+  try {
+    license = await licenseResponse.json();
+  } catch {
+    return {
+      error: response({
+        error: {
+          code: "license_check_unavailable",
+          message: "No se pudo comprobar tu licencia. Inténtalo de nuevo."
+        }
+      }, 503)
+    };
+  }
+
+  if (license.allowed !== true ||
+      license.status !== "active" ||
+      license.licenseType !== "paid") {
+    return {
+      error: response({
+        error: {
+          code: "paid_license_required",
+          message: "El Chat es exclusivo para compradores con una licencia de pago activa de Deporte Total 360°."
+        }
+      }, 403)
+    };
+  }
+
+  return { identity, role: "member" };
+}
+
 export async function handleChannelRoutes(request, env, path) {
   const method = request.method.toUpperCase();
 
