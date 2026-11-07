@@ -1080,7 +1080,7 @@ test("un fallo del Durable Object de chat no derriba el Worker y responde 503 co
 });
 
 
-test("solo selecciona canales deportivos y limita importación por fuente a 1000", () => {
+test("el selector deportivo conserva todos los canales deportivos sin limitar a mil", () => {
   const mixed = [
     { name: "General TV", url: "https://media.example/general.m3u8", isSports: 0 },
     ...Array.from({ length: 1200 }, (_, index) => ({
@@ -1090,7 +1090,7 @@ test("solo selecciona canales deportivos y limita importación por fuente a 1000
     }))
   ];
   const selected = selectSportsChannels(mixed);
-  assert.equal(selected.length, 1000);
+  assert.equal(selected.length, 1200);
   assert.equal(selected[0].name, "Sports Channel 0");
   assert.equal(selected.every(channel => channel.isSports === 1), true);
 });
