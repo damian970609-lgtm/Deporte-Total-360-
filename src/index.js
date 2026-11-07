@@ -1367,7 +1367,7 @@ function validateSportsApiQuery(params,allowed) {
   const page=params.get("page"); if(page&&(!/^\d+$/.test(page)||Number(page)>99)) return "Página fuera del rango permitido.";
   for(const key of ["league","series","category","season","session","round","limit"]) { const value=params.get(key); if(value&&(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<1)) return "Identificador inválido: "+key; }
   if(routeNeedsDate(allowed) && !date) return "La fecha es obligatoria: YYYY-MM-DD.";
-  if(allowed.includes("country")) {
+  if(allowed.includes("date")) {
     const country=params.get("country");
     if(country&&!/^[a-z]{2}$/i.test(country)) return "El país debe usar un código ISO de dos letras.";
     const selectors=["league","category","country"].filter(key=>params.has(key));
