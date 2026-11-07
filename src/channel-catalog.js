@@ -1265,6 +1265,22 @@ export class ChannelCatalogRoom {
       });
     }
 
+    if (path === "/scheduled-refresh" && request.method === "POST") {
+      const dueRows = Array.from(this.sql.exec(
+        "SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?",
+        Date.now()
+      ));
+      const due = Number(dueRows[0] && dueRows[0].total || 0);
+      if (due > 0) await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({
+        queued: due > 0,
+        due,
+        message: due > 0
+          ? "Se programaron solo las fuentes cuyo intervalo de actualización venció."
+          : "No hay fuentes pendientes de actualización."
+      }, due > 0 ? 202 : 200);
+    }
+
     if (path === "/refresh" && request.method === "POST") {
       this.sql.exec(
         "UPDATE sources SET status = 'queued', imported_count = 0, import_offset = 0, next_refresh_at = 0 " +
