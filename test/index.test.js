@@ -449,6 +449,7 @@ test("catálogo de favoritos publica los diez deportes y competiciones", async (
   assert.ok(body.sports.some(sport => sport.id === "futsal"));
   assert.ok(body.sports.some(sport => sport.id === "cycling"));
   assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("UEFA Champions League"));
+  assert.ok(body.sports.find(sport => sport.id === "football").competitionAliases["LaLiga EA SPORTS"].includes("LaLiga"));
   assert.deepEqual(body.sports.find(sport => sport.id === "basketball").competitions, ["NBA", "WNBA"]);
   assert.ok(body.sports.find(sport => sport.id === "football").competitions.includes("Women's Super League"));
   assert.ok(body.sports.find(sport => sport.id === "cycling").competitions.includes("Tour de France Femmes avec Zwift"));
@@ -604,6 +605,53 @@ test("SportsAPI conserva todas las ligas de una respuesta que ya estuviera en ca
   assert.equal(upstreamCalled, false);
   assert.deepEqual(body.data.map(item => item.league.name), ["Premier League", "Championship"]);
   assert.equal(response.headers.get("X-Data-Source"), "cache");
+});
+
+test("refresh omite la caché del proxy, no se reenvía al proveedor y actualiza la caché", async () => {
+  const cacheEntries = installCache();
+  const cacheUrl = "https://api.sportsapi.app/v2/fixtures?date=2026-11-07&sport=football&page=0";
+  cacheEntries.set(cacheUrl, new Response(JSON.stringify({
+    data: [{ id: 1, league: { id: 1, name: "Old League" } }],
+    meta: { hasNextPage: false }
+  }), { status: 200, headers: { "Cache-Control": "public, max-age=180" } }));
+
+  let upstreamUrl;
+  globalThis.fetch = async url => {
+    upstreamUrl = new URL(url);
+    return new Response(JSON.stringify({
+      data: [{ id: 2, league: { id: 2, name: "Fresh League" } }],
+      meta: { hasNextPage: false }
+    }), { status: 200 });
+  };
+
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&page=0&refresh=1"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  const body = await response.json();
+  const refreshedCache = await globalThis.caches.default.match(new Request(cacheUrl));
+  const cachedBody = await refreshedCache.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(upstreamUrl.searchParams.has("refresh"), false);
+  assert.equal(upstreamUrl.searchParams.get("page"), "0");
+  assert.equal(body.data[0].league.name, "Fresh League");
+  assert.equal(response.headers.get("X-Data-Source"), "sportsapi");
+  assert.equal(cachedBody.data[0].league.name, "Fresh League");
+});
+
+test("refresh acepta solo 0 o 1", async () => {
+  let upstreamCalled = false;
+  globalThis.fetch = async () => {
+    upstreamCalled = true;
+    return new Response(JSON.stringify({ data: [], meta: {} }), { status: 200 });
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&refresh=yes"),
+    { SPORTAPI_API_KEY: "test" }
+  );
+  assert.equal(response.status, 400);
+  assert.equal(upstreamCalled, false);
 });
 
 test("el limitador global reserva una ranura por consulta y mantiene el intervalo entre llamadas", async () => {
