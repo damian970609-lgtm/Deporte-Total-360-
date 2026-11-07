@@ -1276,21 +1276,9 @@ function filterSportsApiFavoriteData(payload, request, route) {
     }
   }
 
-  // Evita dejar la agenda vacía por una diferencia de nombre del proveedor.
-  // Si hay partidos pero ninguno coincide con el catálogo estático, conserva
-  // el lote original; cuando sí hay coincidencias, mantiene el filtro normal.
-  if (filtered.length === 0 && payload.data.length > 0) {
-    return {
-      ...payload,
-      meta: {
-        ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
-        count: payload.data.length,
-        favoriteCompetitionFilter: false,
-        favoriteCompetitionFilterFallback: true
-      }
-    };
-  }
-
+  // El filtro de favoritos es estricto: una competición que no aparece
+  // en la selección nunca se devuelve como respaldo. Es preferible una lista
+  // vacía y verificable a mezclar ligas que el usuario no eligió.
   return {
     ...payload,
     data: filtered,
