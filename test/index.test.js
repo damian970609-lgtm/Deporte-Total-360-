@@ -1430,3 +1430,72 @@ test("el Worker sustituye los encabezados de identidad del cliente en el Chat", 
   assert.equal(roomRequests[0].headers.get("X-Chat-Role"), "member");
   assert.equal(roomRequests[0].headers.get("Authorization"), null);
 });
+
+
+test("el Worker enruta denuncias autenticadas de compradores al Durable Object", async () => {
+  installChatAuthorizationTestFetch();
+  const { env, roomRequests, catalogRequests } = privateChatTestEnv();
+  const response = await worker.fetch(
+    authenticatedChatRequest(
+      "/api/chat/messages/message-456/report",
+      "POST",
+      { reason: "spam" }
+    ),
+    env
+  );
+  assert.equal(response.status, 200);
+  assert.equal(catalogRequests.length, 1);
+  assert.equal(roomRequests.length, 1);
+  assert.equal(new URL(roomRequests[0].url).pathname, "/messages/message-456/report");
+  assert.equal(roomRequests[0].headers.get("X-Chat-Role"), "member");
+  assert.equal(roomRequests[0].headers.get("X-Chat-User-Id"), "google-sub-1");
+});
+
+test("el Worker permite consultar denuncias solo a la cuenta administradora", async () => {
+  installChatAuthorizationTestFetch();
+  const { env: memberEnv, roomRequests: memberCalls } = privateChatTestEnv();
+  const denied = await worker.fetch(
+    authenticatedChatRequest("/api/chat/reports"),
+    memberEnv
+  );
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).error.code, "moderator_required");
+  assert.equal(memberCalls.length, 0);
+
+  installChatAuthorizationTestFetch("owner@example.com", "owner-google-sub");
+  const { env: ownerEnv, roomRequests: ownerCalls } = privateChatTestEnv({
+    email: "owner@example.com",
+    sub: "owner-google-sub",
+    roomResponse: { reports: [] }
+  });
+  const allowed = await worker.fetch(
+    authenticatedChatRequest("/api/chat/reports"),
+    ownerEnv
+  );
+  assert.equal(allowed.status, 200);
+  assert.deepEqual((await allowed.json()).reports, []);
+  assert.equal(ownerCalls.length, 1);
+  assert.equal(new URL(ownerCalls[0].url).pathname, "/reports");
+  assert.equal(ownerCalls[0].headers.get("X-Chat-Role"), "admin");
+});
+
+test("el Worker permite resolver denuncias solo a la cuenta administradora", async () => {
+  installChatAuthorizationTestFetch("owner@example.com", "owner-google-sub");
+  const { env, roomRequests } = privateChatTestEnv({
+    email: "owner@example.com",
+    sub: "owner-google-sub",
+    roomResponse: { updated: true, status: "resolved" }
+  });
+  const response = await worker.fetch(
+    authenticatedChatRequest(
+      "/api/chat/reports/report-123",
+      "PATCH",
+      { status: "resolved" }
+    ),
+    env
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "resolved");
+  assert.equal(new URL(roomRequests[0].url).pathname, "/reports/report-123");
+  assert.equal(roomRequests[0].headers.get("X-Chat-Role"), "admin");
+});
