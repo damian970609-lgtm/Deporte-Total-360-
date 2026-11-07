@@ -30,6 +30,7 @@ const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
 const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
 const MAX_IMPORTED_CHANNELS = 50000;
 const MAX_SOURCE_COUNT = 100;
+const MAX_CHANNEL_CATALOG_OFFSET = 5000000;
 const IMPORT_CHANNEL_BATCH_SIZE = 1000;
 const REFRESH_BATCH_SIZE = 2;
 // Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
@@ -565,7 +566,7 @@ export async function handleChannelRoutes(request, env, path) {
     const incoming = new URL(request.url);
     const offset = Math.max(
       0,
-      Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0)
+      Math.min(MAX_CHANNEL_CATALOG_OFFSET, Number(incoming.searchParams.get("offset") || 0) || 0)
     );
     const limit = Math.max(
       1,
@@ -694,7 +695,7 @@ export async function handleChannelRoutes(request, env, path) {
   if (path === "/api/channels/admin/catalog" && method === "GET") {
     const incoming = new URL(request.url);
     const search = cleanText(incoming.searchParams.get("q") || "", 100);
-    const cursor = Math.max(0, Math.min(100000, Number(incoming.searchParams.get("offset") || 0) || 0));
+    const cursor = Math.max(0, Math.min(MAX_CHANNEL_CATALOG_OFFSET, Number(incoming.searchParams.get("offset") || 0) || 0));
     return callCatalog(env, "/catalog?scope=admin&q=" + encodeURIComponent(search) + "&offset=" + cursor);
   }
 
@@ -965,7 +966,7 @@ export class ChannelCatalogRoom {
     if (path === "/catalog" && request.method === "GET") {
       const admin = url.searchParams.get("scope") === "admin";
       const search = cleanText(url.searchParams.get("q") || "", 100);
-      const offset = Math.max(0, Math.min(100000, Number(url.searchParams.get("offset") || 0) || 0));
+      const offset = Math.max(0, Math.min(MAX_CHANNEL_CATALOG_OFFSET, Number(url.searchParams.get("offset") || 0) || 0));
       const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get("limit") || 200) || 200));
       const where = admin ? "1=1" : "visible = 1 AND is_sports = 1";
       const filter = search ? " AND (lower(name) LIKE ? OR lower(group_title) LIKE ?)" : "";
