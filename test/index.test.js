@@ -1200,7 +1200,7 @@ test("rechaza formatos legibles que no contienen señales multimedia compatibles
 
 
 test("un fallo del Durable Object de chat no derriba el Worker y responde 503 controlado", async () => {
-  installChatAuthorizationTestFetch();
+  installChatAuthorizationTestFetch("owner@example.com", "owner-google-sub");
   const response = await worker.fetch(
     authenticatedChatRequest("/api/chat/messages"),
     {
