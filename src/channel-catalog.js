@@ -537,6 +537,32 @@ export async function handleChannelRoutes(request, env, path) {
     return response({ error: { code: "admin_required", message: "Esta cuenta no tiene permisos de administrador." } }, 403);
   }
 
+  if (path === "/api/channels/admin/sources/bulk" && method === "POST") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "El cuerpo debe ser JSON válido." }, 400);
+    }
+    if (!Array.isArray(payload && payload.sources) ||
+        payload.sources.length === 0 || payload.sources.length > MAX_SOURCE_COUNT) {
+      return response({
+        error: "Envía entre 1 y 100 listas en el lote."
+      }, 400);
+    }
+    const sources = [];
+    for (let index = 0; index < payload.sources.length; index++) {
+      const item = payload.sources[index];
+      const url = String(item && item.url || "").trim();
+      const label = cleanText(item && item.label || "Lista IPTV", 80);
+      if (!validPublicHttpsUrl(url) || !label) {
+        return response({
+          error: "La lista número " + (index + 1) + " necesita un nombre y una URL HTTPS pública válida."
+        }, 400);
+      }
+      sources.push({ url, label });
+    }
+    return callCatalog(env, "/sources/bulk", "POST", { sources });
+  }
+
   // Gestión de licencias: solo la cuenta administradora puede conceder,
   // consultar o revocar accesos de pago y pases gratuitos.
   if (path === "/api/channels/admin/licenses" && method === "GET") {
@@ -964,9 +990,14 @@ export class ChannelCatalogRoom {
 
     if (path === "/sources" && request.method === "GET") {
       const rows = Array.from(this.sql.exec(
-        "SELECT id, url, label, status, format, last_imported_at, last_error, imported_count FROM sources ORDER BY label COLLATE NOCASE"
+        "SELECT id, url, label, status, format, last_imported_at, last_error, imported_count, import_offset FROM sources ORDER BY label COLLATE NOCASE"
       ));
-      return response({ sources: rows, count: rows.length });
+      return response({
+        sources: rows,
+        count: rows.length,
+        limit: MAX_SOURCE_COUNT,
+        remaining: Math.max(0, MAX_SOURCE_COUNT - rows.length)
+      });
     }
 
     if (path === "/sources" && request.method === "POST") {
@@ -978,14 +1009,74 @@ export class ChannelCatalogRoom {
       const label = cleanText(payload && payload.label || "Lista IPTV", 80);
       if (!validPublicHttpsUrl(sourceUrl)) return response({ error: "URL HTTPS pública no válida." }, 400);
       const existing = Array.from(this.sql.exec("SELECT id FROM sources WHERE url = ?", sourceUrl))[0];
+      const totalRows = Array.from(this.sql.exec("SELECT COUNT(*) AS total FROM sources"))[0];
+      const total = Number(totalRows && totalRows.total || 0);
+      if (!existing && total >= MAX_SOURCE_COUNT) {
+        return response({
+          error: "El catálogo ya tiene sus 100 listas. Quita una fuente antes de añadir otra.",
+          count: total,
+          limit: MAX_SOURCE_COUNT
+        }, 409);
+      }
       const id = existing ? existing.id : crypto.randomUUID();
       this.sql.exec(
-        "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0) " +
-        "ON CONFLICT(url) DO UPDATE SET label = excluded.label, status = 'queued', last_error = '', next_refresh_at = 0",
+        "INSERT INTO sources (id, url, label, status, imported_count, import_offset, next_refresh_at) VALUES (?, ?, ?, 'queued', 0, 0, 0) " +
+        "ON CONFLICT(url) DO UPDATE SET label = excluded.label, status = 'queued', last_error = '', imported_count = 0, import_offset = 0, next_refresh_at = 0",
         id, sourceUrl, label
       );
       await this.state.storage.setAlarm(Date.now() + 1000);
-      return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano." }, 202);
+      return response({ saved: true, status: "queued", message: "Lista añadida. Se importará en segundo plano.", count: existing ? total : total + 1, limit: MAX_SOURCE_COUNT }, 202);
+    }
+
+    if (path === "/sources/bulk" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const batch = Array.isArray(payload && payload.sources) ? payload.sources : [];
+      if (batch.length === 0 || batch.length > MAX_SOURCE_COUNT) {
+        return response({ error: "El lote debe contener entre 1 y 100 listas." }, 400);
+      }
+      let total = Number(Array.from(this.sql.exec(
+        "SELECT COUNT(*) AS total FROM sources"
+      ))[0]?.total || 0);
+      let added = 0;
+      let duplicates = 0;
+      let skipped = 0;
+      for (const item of batch) {
+        const sourceUrl = String(item && item.url || "").trim();
+        const label = cleanText(item && item.label || "Lista IPTV", 80);
+        if (!validPublicHttpsUrl(sourceUrl) || !label) {
+          skipped += 1;
+          continue;
+        }
+        const existing = Array.from(this.sql.exec(
+          "SELECT id FROM sources WHERE url = ?", sourceUrl
+        ))[0];
+        if (existing) {
+          duplicates += 1;
+          continue;
+        }
+        if (total >= MAX_SOURCE_COUNT) {
+          skipped += 1;
+          continue;
+        }
+        this.sql.exec(
+          "INSERT INTO sources (id, url, label, status, imported_count, import_offset, next_refresh_at) VALUES (?, ?, ?, 'queued', 0, 0, 0)",
+          crypto.randomUUID(), sourceUrl, label
+        );
+        total += 1;
+        added += 1;
+      }
+      if (added > 0) await this.state.storage.setAlarm(Date.now() + 1000);
+      return response({
+        added,
+        duplicates,
+        skipped,
+        total,
+        limit: MAX_SOURCE_COUNT,
+        complete: total === MAX_SOURCE_COUNT
+      }, 202);
     }
 
     const sourceUpdate = path.match(/^\/sources\/([a-zA-Z0-9_-]{1,100})$/);
