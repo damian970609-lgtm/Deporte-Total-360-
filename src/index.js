@@ -1251,12 +1251,16 @@ function filterSportsApiFavoriteData(payload) {
 }
 
 function sportsApiFavoritesResponse() {
-  return json({sports:FAVORITE_SPORTS.map(s=>({...s,kind:s.id==="cycling"||s.id==="motorsport"?"races":"fixtures"}))},200,{"Cache-Control":"public, max-age=3600"});
+  return json({sports:FAVORITE_SPORTS.map(s=>({
+    ...s,
+    competitionAliases: SPORTSAPI_COMPETITION_ALIASES[s.id] || {},
+    kind:s.id==="cycling"||s.id==="motorsport"?"races":"fixtures"
+  }))},200,{"Cache-Control":"public, max-age=3600"});
 }
 function sportsApiRoute(path) {
   const suffix=path.replace(/^\/api\/sportsapi\/?/,"");
   if(!suffix||suffix.includes("..")||suffix.includes("\\")||suffix.includes("//")) return null;
-  const roots={sports:[],livescores:["sport"],fixtures:["date","sport","league","page"],races:["date","sport","series","page"],categories:["sport"],leagues:["category","sport","country"],series:["category","sport"]};
+  const roots={sports:[],livescores:["sport"],fixtures:["date","sport","league","page","refresh"],races:["date","sport","series","page","refresh"],categories:["sport"],leagues:["category","sport","country"],series:["category","sport"]};
   if(Object.hasOwn(roots,suffix)) return {upstream:suffix,allowed:roots[suffix]};
   let m=suffix.match(/^fixtures\/(\d+)(?:\/(statistics|events|lineups|h2h|form|streaks|best-players))?$/);
   if(m) return {upstream:"fixtures/"+m[1]+(m[2]?"/"+m[2]:""),allowed:[]};
@@ -1273,6 +1277,7 @@ function validateSportsApiQuery(params,allowed) {
   const date=params.get("date"); if(date&&!validDate(date)) return "Fecha inválida: YYYY-MM-DD.";
   const sport=params.get("sport"); if(sport&&!SPORTSAPI_SLUGS.has(sport)) return "Deporte no incluido en favoritos.";
   const page=params.get("page"); if(page&&(!/^\d+$/.test(page)||Number(page)>99)) return "Página fuera del rango permitido.";
+  const refresh=params.get("refresh"); if(refresh&&!["0","1"].includes(refresh)) return "El parámetro refresh debe ser 0 o 1.";
   for(const key of ["league","series","category","season","session","round","limit"]) { const value=params.get(key); if(value&&(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<1)) return "Identificador inválido: "+key; }
   return null;
 }
@@ -1282,10 +1287,13 @@ async function sportsApiProxy(request,env,route) {
   const incoming=new URL(request.url);
   const validationError=validateSportsApiQuery(incoming.searchParams,route.allowed);
   if(validationError) return json({error:{code:"bad_request",message:validationError}},400);
+  const forceRefresh = incoming.searchParams.get("refresh") === "1";
+  // refresh solo controla la caché del proxy; nunca se envía al proveedor.
+  incoming.searchParams.delete("refresh");
   const upstreamUrl=SPORTSAPI_BASE+"/"+route.upstream+incoming.search;
   const cacheKey=new Request(upstreamUrl,{method:"GET"});
   const cache=globalThis.caches?.default;
-  const cached=await cacheMatch(cache,cacheKey);
+  const cached=forceRefresh ? null : await cacheMatch(cache,cacheKey);
   if(cached) {
     try {
       const cachedPayload = await cached.json();
@@ -1312,7 +1320,7 @@ async function sportsApiProxy(request,env,route) {
         await new Promise(resolve => setTimeout(resolve, Number(slot.waitMs)));
       }
       // Otra petición puede haber llenado la caché mientras esta esperaba.
-      const afterWaitCache = await cacheMatch(cache, cacheKey);
+      const afterWaitCache = forceRefresh ? null : await cacheMatch(cache, cacheKey);
       if (afterWaitCache) {
         const cachedPayload = await afterWaitCache.json();
         return json(cachedPayload, 200, {
@@ -1329,7 +1337,7 @@ async function sportsApiProxy(request,env,route) {
     const todayUtc = new Date().toISOString().slice(0, 10);
     const dateTtl = requestDate && requestDate < todayUtc
       ? 21600
-      : requestDate === todayUtc ? 1800 : 21600;
+      : requestDate === todayUtc ? 180 : 900;
     const ttl = route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"
       ? 3600
       : route.upstream==="livescores" ? 15
