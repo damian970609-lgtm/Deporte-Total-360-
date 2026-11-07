@@ -10,6 +10,31 @@ function request(path, method = "GET") {
   return new Request(`https://worker.example${path}`, { method });
 }
 
+function sportsApiTestEnv(apiKey = "test", reservations = []) {
+  return {
+    SPORTAPI_API_KEY: apiKey,
+    SPORTSAPI_RATE_LIMITER: {
+      idFromName(name) {
+        assert.equal(name, "sportsapi-account-global");
+        return "sportsapi-rate-limiter-id";
+      },
+      get(id) {
+        assert.equal(id, "sportsapi-rate-limiter-id");
+        return {
+          async fetch(url) {
+            assert.equal(new URL(url).pathname, "/reserve");
+            reservations.push(true);
+            return new Response(JSON.stringify({ waitMs: 0 }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+        };
+      }
+    }
+  };
+}
+
 function installCache() {
   const data = new Map();
 
@@ -468,7 +493,7 @@ test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () =>
   };
   const response = await worker.fetch(
     request("/api/sportsapi/fixtures?date=2026-11-03&sport=football&page=0"),
-    { SPORTAPI_API_KEY: "sportsapi-test-secret" }
+    sportsApiTestEnv("sportsapi-test-secret")
   );
   const body = await response.json();
   assert.equal(response.status, 200);
@@ -487,7 +512,7 @@ test("proxy SportsAPI.app valida el deporte antes de llamar al proveedor", async
   };
   const response = await worker.fetch(
     request("/api/sportsapi/fixtures?date=2026-11-03&sport=not-a-sport"),
-    { SPORTAPI_API_KEY: "test" }
+    sportsApiTestEnv()
   );
   assert.equal(response.status, 400);
   assert.equal(called, false);
@@ -516,6 +541,39 @@ test("SportsAPI filtra partidos a las competiciones favoritas masculinas y femen
   ]);
   assert.equal(body.meta.count, 3);
   assert.equal(body.meta.favoriteCompetitionFilter, true);
+});
+
+
+test("SportsAPI canonicaliza variantes largas del nombre comercial de una liga", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    data: [
+      { id: 901, league: { id: 39, name: "LaLiga EA SPORTS 2026" } },
+      { id: 902, league: { id: 40, name: "Championship" } }
+    ],
+    meta: { count: 2, hasNextPage: false }
+  }), { status: 200 });
+
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&page=0"),
+    sportsApiTestEnv()
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data.map(item => item.league.name), ["LaLiga EA SPORTS"]);
+});
+
+test("el proxy reserva una ranura global antes de consultar SportsAPI", async () => {
+  const reservations = [];
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    data: [], meta: { count: 0, hasNextPage: false }
+  }), { status: 200 });
+
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&page=0"),
+    sportsApiTestEnv("test", reservations)
+  );
+  assert.equal(response.status, 200);
+  assert.equal(reservations.length, 1);
 });
 
 test("SportsAPI no devuelve ligas ajenas cuando ninguna coincide con favoritos", async () => {
