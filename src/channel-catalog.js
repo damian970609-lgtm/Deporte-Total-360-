@@ -967,6 +967,14 @@ export class ChannelCatalogRoom {
       "updated_at TEXT NOT NULL)"
     );
     this.sql.exec("CREATE INDEX IF NOT EXISTS idx_user_licenses_status ON user_licenses(status, license_type)");
+    // Diez plazas de prueba temporales; solo se guarda el hash del código y del token.
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS trial_passes (" +
+      "code_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('available','active','revoked','expired')), " +
+      "created_at TEXT NOT NULL, activated_at TEXT, expires_at TEXT, " +
+      "device_hash TEXT, session_hash TEXT)"
+    );
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_trial_passes_status ON trial_passes(status, expires_at)");
 
     // Migración idempotente: registra una lista deportiva pública por defecto
     // una sola vez y la coloca primero en la cola de importación.
@@ -1057,6 +1065,109 @@ export class ChannelCatalogRoom {
         licenseType: row.license_type,
         email: row.email,
         grantedAt: row.granted_at
+      });
+    }
+    if (path === "/trials" && request.method === "GET") {
+      const rows = Array.from(this.sql.exec(
+        "SELECT status, COUNT(*) AS count FROM trial_passes GROUP BY status"
+      ));
+      const counts = Object.fromEntries(rows.map(row => [row.status, Number(row.count || 0)]));
+      return response({
+        limit: 10,
+        available: counts.available || 0,
+        active: counts.active || 0,
+        expired: counts.expired || 0,
+        revoked: counts.revoked || 0,
+        total: rows.reduce((sum, row) => sum + Number(row.count || 0), 0)
+      });
+    }
+
+    if (path === "/trials" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const passes = Array.isArray(payload && payload.passes) ? payload.passes : [];
+      if (passes.length < 1 || passes.length > 10 ||
+          !passes.every(item => /^[a-f0-9]{64}$/.test(String(item && item.codeHash || "")))) {
+        return response({ error: "Los códigos de prueba no tienen un formato válido." }, 400);
+      }
+      const now = new Date().toISOString();
+      const occupied = Array.from(this.sql.exec(
+        "SELECT COUNT(*) AS count FROM trial_passes WHERE status = 'available' OR (status = 'active' AND expires_at > ?)",
+        now
+      ))[0];
+      const remaining = Math.max(0, 10 - Number(occupied && occupied.count || 0));
+      const accepted = passes.slice(0, remaining);
+      for (const item of accepted) {
+        this.sql.exec(
+          "INSERT OR IGNORE INTO trial_passes (code_hash, status, created_at) VALUES (?, 'available', ?)",
+          String(item.codeHash), now
+        );
+      }
+      return response({
+        created: accepted.length,
+        remaining: Math.max(0, remaining - accepted.length),
+        limit: 10
+      }, accepted.length > 0 ? 201 : 409);
+    }
+
+    if (path === "/trials/redeem" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const codeHash = String(payload && payload.codeHash || "");
+      const deviceHash = String(payload && payload.deviceHash || "");
+      const sessionHash = String(payload && payload.sessionHash || "");
+      if (![codeHash, deviceHash, sessionHash].every(value => /^[a-f0-9]{64}$/.test(value))) {
+        return response({ error: "El código o la identificación del dispositivo no son válidos." }, 400);
+      }
+      const row = Array.from(this.sql.exec(
+        "SELECT code_hash, status FROM trial_passes WHERE code_hash = ?",
+        codeHash
+      ))[0];
+      if (!row || row.status !== "available") {
+        return response({ error: "El código VIP no existe, ya fue utilizado o no está disponible." }, 409);
+      }
+      const now = new Date();
+      const activatedAt = now.toISOString();
+      const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      this.sql.exec(
+        "UPDATE trial_passes SET status = 'active', activated_at = ?, expires_at = ?, device_hash = ?, session_hash = ? WHERE code_hash = ? AND status = 'available'",
+        activatedAt, expiresAt, deviceHash, sessionHash, codeHash
+      );
+      const activated = Array.from(this.sql.exec(
+        "SELECT status, device_hash, session_hash, expires_at FROM trial_passes WHERE code_hash = ?",
+        codeHash
+      ))[0];
+      if (!activated || activated.status !== "active" ||
+          activated.device_hash !== deviceHash || activated.session_hash !== sessionHash) {
+        return response({ error: "No se pudo activar el código VIP. Inténtalo de nuevo." }, 409);
+      }
+      return response({ activated: true, expiresAt });
+    }
+
+    if (path === "/trials/check" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const sessionHash = String(payload && payload.sessionHash || "");
+      const deviceHash = String(payload && payload.deviceHash || "");
+      if (![sessionHash, deviceHash].every(value => /^[a-f0-9]{64}$/.test(value))) {
+        return response({ allowed: false, status: "invalid" }, 400);
+      }
+      const row = Array.from(this.sql.exec(
+        "SELECT expires_at FROM trial_passes WHERE session_hash = ? AND device_hash = ? AND status = 'active'",
+        sessionHash, deviceHash
+      ))[0];
+      const allowed = Boolean(row && Date.parse(row.expires_at) > Date.now());
+      return response({
+        allowed,
+        status: allowed ? "active" : row ? "expired" : "not_found",
+        licenseType: "trial",
+        expiresAt: row ? row.expires_at : null
       });
     }
 
