@@ -639,8 +639,8 @@ async function trialIdentity(request, env) {
 
 /**
  * Autoriza el Chat con la misma identidad Google y el registro de licencias
- * que ya protege la APK completa. Solo licencias pagadas activas y el dueño
- * pueden leer o publicar. El pase gratuito habilita la APK, pero no el Chat.
+ * que ya protege la APK completa. El dueño y las licencias pagadas pueden
+ * leer o publicar; un pase VIP temporal también permite probar el Chat.
  */
 export async function authorizeChatAccess(request, env) {
   const trial = await trialIdentity(request, env);
@@ -1203,17 +1203,23 @@ export class ChannelCatalogRoom {
       });
     }
     if (path === "/trials" && request.method === "GET") {
-      const rows = Array.from(this.sql.exec(
-        "SELECT status, COUNT(*) AS count FROM trial_passes GROUP BY status"
-      ));
-      const counts = Object.fromEntries(rows.map(row => [row.status, Number(row.count || 0)]));
+      const now = new Date().toISOString();
+      const row = Array.from(this.sql.exec(
+        "SELECT " +
+        "SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) AS available, " +
+        "SUM(CASE WHEN status = 'active' AND expires_at > ? THEN 1 ELSE 0 END) AS active, " +
+        "SUM(CASE WHEN status = 'active' AND expires_at <= ? THEN 1 ELSE 0 END) AS expired, " +
+        "SUM(CASE WHEN status = 'revoked' THEN 1 ELSE 0 END) AS revoked, " +
+        "COUNT(*) AS total FROM trial_passes",
+        now, now
+      ))[0] || {};
       return response({
         limit: 10,
-        available: counts.available || 0,
-        active: counts.active || 0,
-        expired: counts.expired || 0,
-        revoked: counts.revoked || 0,
-        total: rows.reduce((sum, row) => sum + Number(row.count || 0), 0)
+        available: Number(row.available || 0),
+        active: Number(row.active || 0),
+        expired: Number(row.expired || 0),
+        revoked: Number(row.revoked || 0),
+        total: Number(row.total || 0)
       });
     }
 
