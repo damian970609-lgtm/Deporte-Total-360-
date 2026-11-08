@@ -123,12 +123,12 @@ test("el refresco programado solo activa un lote cuando hay fuentes vencidas", a
 
 
 
-test("las importaciones de una fuente se limitan a 5.000 canales", () => {
-  const channels = Array.from({ length: 5100 }, (_, index) => ({
+test("las importaciones de una fuente conservan hasta 50.000 canales", () => {
+  const channels = Array.from({ length: 51000 }, (_, index) => ({
     name: "Canal " + index,
     url: "https://media.example/" + index + ".m3u8"
   }));
-  assert.equal(selectAllChannels(channels).length, 5000);
+  assert.equal(selectAllChannels(channels).length, 50000);
 });
 
 test("el catálogo no siembra listas IPTV públicas automáticamente", () => {
