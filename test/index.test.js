@@ -48,6 +48,246 @@ test("health responde sin clave de proveedor", async () => {
 });
 
 
+test("el catálogo público reutiliza la caché y evita lecturas repetidas del Durable Object", async () => {
+  installCache();
+  let catalogCalls = 0;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return {
+          async fetch() {
+            catalogCalls++;
+            return new Response(JSON.stringify({
+              configured: true,
+              total: 200,
+              totalIsEstimate: true,
+              offset: 0,
+              hasMore: true,
+              channels: [{ id: "sports-1", name: "Canal deportivo", isSports: true }]
+            }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+        };
+      }
+    }
+  };
+  const path = "/api/channels?offset=0&limit=200";
+  const first = await worker.fetch(request(path), env);
+  const firstBody = await first.json();
+  const second = await worker.fetch(request(path), env);
+  const secondBody = await second.json();
+
+  assert.equal(first.status, 200);
+  assert.equal(firstBody.channels.length, 1);
+  assert.equal(first.headers.get("X-Data-Source"), "channel-catalog");
+  assert.equal(second.status, 200);
+  assert.equal(secondBody.channels[0].id, "sports-1");
+  assert.equal(second.headers.get("X-Data-Source"), "cache");
+  assert.equal(catalogCalls, 1);
+});
+
+test("el catálogo pagina con limit+1 sin ejecutar COUNT de toda la tabla", async () => {
+  let countQueryCalled = false;
+  let selectedLimit = 0;
+  const sql = {
+    exec(query, ...params) {
+      if (query.includes("SELECT COUNT(*) AS total FROM channels")) {
+        countQueryCalled = true;
+        return [{ total: 50000 }];
+      }
+      if (query.includes("SELECT id, identifier, name, stream_url")) {
+        selectedLimit = Number(params.at(-2));
+        return [
+          { id: "1", name: "Canal 1", stream_url: "https://example.com/1.m3u8", is_sports: 1, visible: 1 },
+          { id: "2", name: "Canal 2", stream_url: "https://example.com/2.m3u8", is_sports: 1, visible: 1 },
+          { id: "3", name: "Canal 3", stream_url: "https://example.com/3.m3u8", is_sports: 1, visible: 1 }
+        ];
+      }
+      return [];
+    }
+  };
+  const room = new ChannelCatalogRoom({
+    storage: {
+      sql,
+      async setAlarm() {}
+    }
+  }, {});
+  const response = await room.fetch(new Request(
+    "https://channel-catalog.internal/catalog?scope=public&offset=0&limit=2"
+  ));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(countQueryCalled, false);
+  assert.equal(selectedLimit, 3);
+  assert.equal(body.channels.length, 2);
+  assert.equal(body.hasMore, true);
+  assert.equal(body.total, 2);
+  assert.equal(body.totalIsEstimate, true);
+});
+
+test("el cron de las 08:00 de Guyana agenda la precarga diaria", async () => {
+  const pending = [];
+  worker.scheduled({ cron: "0 12 * * *" }, {}, {
+    waitUntil(promise) {
+      pending.push(promise);
+    }
+  });
+  assert.equal(pending.length, 1);
+  await Promise.all(pending);
+});
+
+test("un pase VIP se canjea una vez, se liga al dispositivo y habilita favoritos sin Google", async () => {
+  const trialRows = new Map();
+  const sql = {
+    exec(query, ...params) {
+      if (query.includes("SELECT COUNT(*) AS count FROM trial_passes WHERE status = 'available'")) {
+        const now = Date.parse(params[0]);
+        const occupied = [...trialRows.values()].filter(row =>
+          row.status === "available" ||
+          (row.status === "active" && Date.parse(row.expires_at) > now)
+        ).length;
+        return [{ count: occupied }];
+      }
+      if (query.includes("INSERT OR IGNORE INTO trial_passes")) {
+        const [codeHash, createdAt] = params;
+        if (!trialRows.has(codeHash)) {
+          trialRows.set(codeHash, {
+            code_hash: codeHash,
+            status: "available",
+            created_at: createdAt
+          });
+        }
+        return [];
+      }
+      if (query.includes("SELECT code_hash, status FROM trial_passes WHERE code_hash = ?")) {
+        const row = trialRows.get(params[0]);
+        return row ? [{ code_hash: row.code_hash, status: row.status }] : [];
+      }
+      if (query.includes("UPDATE trial_passes SET status = 'active'")) {
+        const [activatedAt, expiresAt, deviceHash, sessionHash, codeHash] = params;
+        const row = trialRows.get(codeHash);
+        if (row && row.status === "available") {
+          Object.assign(row, {
+            status: "active",
+            activated_at: activatedAt,
+            expires_at: expiresAt,
+            device_hash: deviceHash,
+            session_hash: sessionHash
+          });
+        }
+        return [];
+      }
+      if (query.includes("SELECT status, device_hash, session_hash, expires_at FROM trial_passes")) {
+        const row = trialRows.get(params[0]);
+        return row ? [{
+          status: row.status,
+          device_hash: row.device_hash,
+          session_hash: row.session_hash,
+          expires_at: row.expires_at
+        }] : [];
+      }
+      if (query.includes("SELECT expires_at FROM trial_passes WHERE session_hash = ?")) {
+        const row = [...trialRows.values()].find(item =>
+          item.session_hash === params[0] && item.device_hash === params[1] &&
+          item.status === "active"
+        );
+        return row ? [{ expires_at: row.expires_at }] : [];
+      }
+      if (query.includes("SELECT SUM(CASE WHEN status = 'available'")) {
+        const now = Date.parse(params[0]);
+        const values = [...trialRows.values()];
+        return [{
+          available: values.filter(row => row.status === "available").length,
+          active: values.filter(row => row.status === "active" && Date.parse(row.expires_at) > now).length,
+          expired: values.filter(row => row.status === "active" && Date.parse(row.expires_at) <= now).length,
+          revoked: values.filter(row => row.status === "revoked").length,
+          total: values.length
+        }];
+      }
+      if (query.includes("SELECT f.channel_id FROM favorites")) return [];
+      return [];
+    }
+  };
+  const room = new ChannelCatalogRoom({
+    storage: {
+      sql,
+      async setAlarm() {}
+    }
+  }, {});
+  const code = "ABCD1234EF567890ABCD";
+  const codeHash = [...new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(code)
+  ))].map(value => value.toString(16).padStart(2, "0")).join("");
+  const seeded = await room.fetch(new Request("https://channel-catalog.internal/trials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passes: [{ codeHash }] })
+  }));
+  assert.equal(seeded.status, 201);
+
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return { fetch: request => room.fetch(request) };
+      }
+    }
+  };
+  const deviceId = "b".repeat(64);
+  const redeem = () => handleChannelRoutes(new Request(
+    "https://worker.example/api/trials/redeem",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, deviceId })
+    }
+  ), env, "/api/trials/redeem");
+
+  const first = await redeem();
+  assert.equal(first.status, 200);
+  const session = await first.json();
+  assert.equal(session.activated, true);
+  assert.equal(session.licenseType, "trial");
+  assert.ok(Date.parse(session.expiresAt) > Date.now());
+
+  const second = await redeem();
+  assert.equal(second.status, 409);
+
+  const favorites = await handleChannelRoutes(new Request(
+    "https://worker.example/api/channels/favorites",
+    {
+      headers: {
+        Authorization: "Bearer " + session.sessionToken,
+        "X-DT360-Device-ID": deviceId
+      }
+    }
+  ), env, "/api/channels/favorites");
+  assert.equal(favorites.status, 200);
+  assert.deepEqual(await favorites.json(), { channelIds: [] });
+
+  const wrongDevice = await handleChannelRoutes(new Request(
+    "https://worker.example/api/channels/favorites",
+    {
+      headers: {
+        Authorization: "Bearer " + session.sessionToken,
+        "X-DT360-Device-ID": "c".repeat(64)
+      }
+    }
+  ), env, "/api/channels/favorites");
+  assert.equal(wrongDevice.status, 401);
+});
+
 test("el cron programa solo las fuentes vencidas del catálogo", async () => {
   let requestedPath = "";
   let waited;

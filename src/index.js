@@ -3,7 +3,7 @@ import { ChannelCatalogRoom, authorizeChatAccess, handleChannelRoutes } from "./
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-DT360-Device-ID",
   "Content-Type": "application/json; charset=utf-8",
   "X-Content-Type-Options": "nosniff"
 };
@@ -513,6 +513,41 @@ async function cachePut(cache, key, response) {
   } catch {
     // La API sigue funcionando aunque falle la caché.
   }
+}
+
+async function cachedPublicChannelCatalog(request, env, path) {
+  const cache = globalThis.caches?.default;
+  const cacheKey = new Request(request.url, { method: "GET" });
+  const cached = await cacheMatch(cache, cacheKey);
+  if (cached) {
+    const output = new Response(cached.body, cached);
+    output.headers.set("X-Data-Source", "cache");
+    return output;
+  }
+
+  const upstream = await handleChannelRoutes(request, env, path);
+  if (!upstream.ok) return upstream;
+
+  let payload;
+  try {
+    payload = await upstream.json();
+  } catch {
+    return json({
+      error: {
+        code: "invalid_channel_catalog_response",
+        message: "El catálogo público devolvió una respuesta no válida."
+      }
+    }, 502);
+  }
+
+  // Catálogo público compartido: dos minutos de caché reducen llamadas al
+  // Durable Object sin retrasar demasiado cambios de selección/importación.
+  const cachedResponse = json(payload, upstream.status, {
+    "Cache-Control": "public, max-age=120",
+    "X-Data-Source": "channel-catalog"
+  });
+  await cachePut(cache, cacheKey, cachedResponse.clone());
+  return cachedResponse;
 }
 
 function buildUpstreamParams(incoming, config) {
@@ -1263,13 +1298,13 @@ function sportsApiRoute(path) {
   const roots={sports:[],livescores:["sport"],fixtures:["date","sport","league","page","refresh"],races:["date","sport","series","page","refresh"],categories:["sport"],leagues:["category","sport","country"],series:["category","sport"]};
   if(Object.hasOwn(roots,suffix)) return {upstream:suffix,allowed:roots[suffix]};
   let m=suffix.match(/^fixtures\/(\d+)(?:\/(statistics|events|lineups|h2h|form|streaks|best-players))?$/);
-  if(m) return {upstream:"fixtures/"+m[1]+(m[2]?"/"+m[2]:""),allowed:[]};
+  if(m) return {upstream:"fixtures/"+m[1]+(m[2]?"/"+m[2]:""),allowed:m[2]?["refresh"]:[]};
   m=suffix.match(/^races\/(\d+)(?:\/(results))?$/);
-  if(m) return {upstream:"races/"+m[1]+(m[2]?"/"+m[2]:""),allowed:m[2]?["session"]:[]};
+  if(m) return {upstream:"races/"+m[1]+(m[2]?"/"+m[2]:""),allowed:m[2]?["session","refresh"]:[]};
   m=suffix.match(/^leagues\/(\d+)\/(standings|seasons|top-players|top-teams|fixtures|rounds)$/);
-  if(m) return {upstream:"leagues/"+m[1]+"/"+m[2],allowed:["season","type","round","page","limit","statistic"]};
+  if(m) return {upstream:"leagues/"+m[1]+"/"+m[2],allowed:["season","type","round","page","limit","statistic","refresh"]};
   m=suffix.match(/^series\/(\d+)\/(standings|seasons|races)$/);
-  if(m) return {upstream:"series/"+m[1]+"/"+m[2],allowed:["season","type","page"]};
+  if(m) return {upstream:"series/"+m[1]+"/"+m[2],allowed:["season","type","page","refresh"]};
   return null;
 }
 function validateSportsApiQuery(params,allowed) {
@@ -1344,13 +1379,21 @@ async function sportsApiProxy(request,env,route) {
     if(!upstream.ok) { const retry=upstream.headers.get("Retry-After"); return json(parsed,upstream.status,{"Cache-Control":"no-store",...(retry?{"Retry-After":retry}:{})}); }
     const requestDate = incoming.searchParams.get("date");
     const todayUtc = new Date().toISOString().slice(0, 10);
+    // El calendario del día es una captura diaria: el cron de las 08:00
+    // de Guyana lo precalienta y la APK lo conserva localmente. Para cambiar
+    // horarios o marcadores antes del cierre, el usuario puede forzar refresh.
     const dateTtl = requestDate && requestDate < todayUtc
       ? 21600
-      : requestDate === todayUtc ? 180 : 900;
+      : requestDate === todayUtc ? 43200 : 43200;
+    const isFixtureStatistics = route.upstream.endsWith("/statistics");
+    const isStandings = route.upstream.endsWith("/standings");
     const ttl = route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"
       ? 3600
       : route.upstream==="livescores" ? 15
       : route.upstream==="fixtures"||route.upstream==="races" ? dateTtl
+      : isFixtureStatistics ? 180
+      : isStandings ? 86400
+      : route.upstream.startsWith("races/")&&route.upstream.endsWith("/results") ? 3600
       : route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/") ? 120
       : 120;
     const response=json(parsed,200,{"Cache-Control":"public, max-age="+ttl,"X-Data-Source":"sportsapi"});
@@ -1378,12 +1421,88 @@ export class SportsApiRateLimiter {
 
 export { ChannelCatalogRoom };
 
+function guyanaLocalDate() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Guyana",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const value = key => parts.find(part => part.type === key)?.value || "00";
+  return value("year") + "-" + value("month") + "-" + value("day");
+}
+
+async function warmDailyAgendaCache(env) {
+  const apiKey = env.SPORTAPI_API_KEY || env.SPORTSAPI_API_KEY;
+  if (!apiKey) {
+    console.warn("Agenda diaria no precalentada: falta SPORTAPI_API_KEY.");
+    return;
+  }
+  const localDay = guyanaLocalDate();
+  // Una jornada local de Guyana (UTC-4) cruza dos fechas UTC.
+  const localStartUtc = new Date(localDay + "T00:00:00-04:00");
+  const localEndUtc = new Date(localStartUtc.getTime() + 24 * 60 * 60 * 1000 - 1);
+  const utcDates = [...new Set([
+    localStartUtc.toISOString().slice(0, 10),
+    localEndUtc.toISOString().slice(0, 10)
+  ])];
+  let warmed = 0;
+  let failed = 0;
+
+  // Se precalientan únicamente las disciplinas/competiciones publicadas como
+  // favoritas por el propio catálogo. El limitador común mantiene el orden.
+  for (const sport of FAVORITE_SPORTS) {
+    const upstream = sport.id === "cycling" || sport.id === "motorsport"
+      ? "races"
+      : "fixtures";
+    for (const date of utcDates) {
+      for (let page = 0; page < 20; page++) {
+        const target = new URL("https://daily-agenda.internal/api/sportsapi/" + upstream);
+        target.searchParams.set("date", date);
+        target.searchParams.set("sport", sport.id);
+        target.searchParams.set("page", String(page));
+        try {
+          const response = await sportsApiProxy(
+            new Request(target.toString()),
+            env,
+            sportsApiRoute(target.pathname)
+          );
+          if (!response.ok) {
+            failed += 1;
+            console.warn("No se pudo precalentar agenda diaria", sport.id, date, response.status);
+            break;
+          }
+          const payload = await response.json();
+          warmed += 1;
+          if (payload?.meta?.hasNextPage !== true) break;
+        } catch (error) {
+          failed += 1;
+          console.warn("Error precalentando agenda diaria", sport.id, date, String(error));
+          break;
+        }
+      }
+    }
+  }
+  console.log("Agenda diaria precalentada", JSON.stringify({
+    timezone: "America/Guyana",
+    localDate: localDay,
+    utcDates,
+    warmed,
+    failed
+  }));
+}
+
 export default {
   async scheduled(controller, env, ctx) {
-    if (!env.CHANNEL_CATALOG) return;
-    const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
-    const stub = env.CHANNEL_CATALOG.get(id);
-    ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/scheduled-refresh", { method: "POST" })));
+    if (env.CHANNEL_CATALOG) {
+      const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
+      const stub = env.CHANNEL_CATALOG.get(id);
+      ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/scheduled-refresh", { method: "POST" })));
+    }
+    // 12:00 UTC = 08:00 en Guyana. Una única precarga antes de los eventos.
+    if (controller.cron === "0 12 * * *") {
+      ctx.waitUntil(warmDailyAgendaCache(env));
+    }
   },
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
@@ -1463,7 +1582,11 @@ export default {
       }
     }
 
-    if (path === "/api/license" || path.startsWith("/api/channels")) {
+    if (path === "/api/channels" && request.method === "GET") {
+      return cachedPublicChannelCatalog(request, env, path);
+    }
+
+    if (path === "/api/license" || path.startsWith("/api/channels") || path.startsWith("/api/trials/")) {
       return handleChannelRoutes(request, env, path);
     }
 

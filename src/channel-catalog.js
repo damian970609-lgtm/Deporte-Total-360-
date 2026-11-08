@@ -1,7 +1,7 @@
 const JSON_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-DT360-Device-ID",
   "Content-Type": "application/json; charset=utf-8",
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff"
@@ -581,12 +581,73 @@ async function callCatalog(env, path, method = "GET", payload = null, headers = 
   }
 }
 
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(String(value))
+  );
+  return Array.from(new Uint8Array(digest))
+    .map(byte => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function randomHex(byteCount = 32) {
+  const bytes = new Uint8Array(byteCount);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map(byte => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function trialIdentity(request, env) {
+  const authorization = request.headers.get("Authorization") || "";
+  const token = authorization.replace(/^Bearer\s+/i, "").trim();
+  const deviceId = String(request.headers.get("X-DT360-Device-ID") || "").trim();
+  // Los tokens VIP tienen 256 bits hexadecimales; no se confunden con tokens Google.
+  if (!/^[a-f0-9]{64}$/i.test(token) || !/^[a-f0-9]{64}$/i.test(deviceId)) {
+    return null;
+  }
+  const deviceHash = await sha256Hex(deviceId);
+  const sessionHash = await sha256Hex(token);
+  const checked = await callCatalog(env, "/trials/check", "POST", {
+    deviceHash,
+    sessionHash
+  });
+  if (!checked.ok) return { error: checked };
+  let payload;
+  try { payload = await checked.json(); } catch {
+    return { error: response({error:{code:"trial_check_unavailable",message:"No se pudo comprobar el pase VIP."}},503) };
+  }
+  if (payload.allowed !== true) {
+    return { error: response({
+      error: {
+        code: "trial_expired",
+        message: "El pase VIP no está activo en este dispositivo o ha vencido."
+      }
+    }, 401) };
+  }
+  return {
+    identity: {
+      sub: "vip:" + deviceHash,
+      email: "vip-" + deviceHash.slice(0, 12) + "@trial.deportetotal360.local"
+    },
+    role: "member",
+    trial: true,
+    expiresAt: payload.expiresAt
+  };
+}
+
 /**
  * Autoriza el Chat con la misma identidad Google y el registro de licencias
- * que ya protege la APK completa. Solo licencias pagadas activas y el dueño
- * pueden leer o publicar. El pase gratuito habilita la APK, pero no el Chat.
+ * que ya protege la APK completa. El dueño y las licencias pagadas pueden
+ * leer o publicar; un pase VIP temporal también permite probar el Chat.
  */
 export async function authorizeChatAccess(request, env) {
+  const trial = await trialIdentity(request, env);
+  if (trial) {
+    if (trial.error) return { error: trial.error };
+    return { identity: trial.identity, role: "member", trial: true };
+  }
   const identity = await googleIdentity(request, env);
   if (identity.error) return { error: identity.error };
 
@@ -635,6 +696,51 @@ export async function authorizeChatAccess(request, env) {
 
 export async function handleChannelRoutes(request, env, path) {
   const method = request.method.toUpperCase();
+
+  if (path === "/api/trials/redeem" && method === "POST") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "Envía un código VIP válido." }, 400);
+    }
+    const code = String(payload && payload.code || "").trim().toUpperCase();
+    const deviceId = String(payload && payload.deviceId || "").trim().toLowerCase();
+    if (!/^[A-F0-9]{16,40}$/.test(code) || !/^[a-f0-9]{64}$/.test(deviceId)) {
+      return response({error:{code:"invalid_trial_input",message:"El código VIP o el identificador de este teléfono no son válidos."}},400);
+    }
+    const sessionToken = randomHex(32);
+    const activated = await callCatalog(env, "/trials/redeem", "POST", {
+      codeHash: await sha256Hex(code),
+      deviceHash: await sha256Hex(deviceId),
+      sessionHash: await sha256Hex(sessionToken)
+    });
+    if (!activated.ok) return activated;
+    let result;
+    try { result = await activated.json(); } catch {
+      return response({error:{code:"trial_activation_failed",message:"No se pudo confirmar la activación del pase VIP."}},503);
+    }
+    return response({
+      activated: result.activated === true,
+      sessionToken,
+      expiresAt: result.expiresAt,
+      licenseType: "trial"
+    }, 200, {"Cache-Control":"no-store"});
+  }
+
+  if (path === "/api/trials/check" && method === "POST") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ allowed: false, status: "invalid" }, 400);
+    }
+    const token = String(payload && payload.sessionToken || "").trim();
+    const deviceId = String(payload && payload.deviceId || "").trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(token) || !/^[a-f0-9]{64}$/.test(deviceId)) {
+      return response({ allowed: false, status: "invalid" }, 400, {"Cache-Control":"no-store"});
+    }
+    return callCatalog(env, "/trials/check", "POST", {
+      sessionHash: await sha256Hex(token),
+      deviceHash: await sha256Hex(deviceId)
+    });
+  }
 
   // El ID de cliente OAuth es público por diseño. Esta ruta permite que la APK
   // compruebe que usa el mismo cliente Web configurado en el Worker.
@@ -685,8 +791,11 @@ export async function handleChannelRoutes(request, env, path) {
 
   if (path === "/api/channels/favorites") {
     if (method !== "GET" && method !== "PUT") return response({ error: "Método no permitido" }, 405);
-    const identity = await googleIdentity(request, env);
-    if (identity.error) return identity.error;
+    const trial = await trialIdentity(request, env);
+    if (trial && trial.error) return trial.error;
+    const resolved = trial || await googleIdentity(request, env);
+    if (resolved.error) return resolved.error;
+    const identity = resolved.identity;
     if (method === "GET") {
       return callCatalog(env, "/favorites", "GET", null, {
         "X-Channel-User-Sub": identity.sub
@@ -710,6 +819,32 @@ export async function handleChannelRoutes(request, env, path) {
   if (identity.error) return identity.error;
   if (!isAdmin(identity, env)) {
     return response({ error: { code: "admin_required", message: "Esta cuenta no tiene permisos de administrador." } }, 403);
+  }
+
+  if (path === "/api/channels/admin/trials" && method === "GET") {
+    return callCatalog(env, "/trials", "GET");
+  }
+
+  if (path === "/api/channels/admin/trials" && method === "POST") {
+    let payload;
+    try { payload = await request.json(); } catch {
+      return response({ error: "JSON inválido." }, 400);
+    }
+    const count = Math.max(1, Math.min(10, Number(payload && payload.count) || 10));
+    const codes = Array.from({length:count}, () => randomHex(10).toUpperCase());
+    const passes = await Promise.all(codes.map(async code => ({
+      codeHash: await sha256Hex(code)
+    })));
+    const created = await callCatalog(env, "/trials", "POST", { passes });
+    let result;
+    try { result = await created.clone().json(); } catch { return created; }
+    if (!created.ok) return created;
+    // Los códigos solo se muestran al administrador al generarlos; la base guarda sus hashes.
+    return response({
+      ...result,
+      codes: codes.slice(0, Number(result.created || 0)),
+      trialDays: 30
+    }, 201, {"Cache-Control":"no-store"});
   }
 
   if (path === "/api/channels/admin/sources/bulk" && method === "POST") {
@@ -967,6 +1102,14 @@ export class ChannelCatalogRoom {
       "updated_at TEXT NOT NULL)"
     );
     this.sql.exec("CREATE INDEX IF NOT EXISTS idx_user_licenses_status ON user_licenses(status, license_type)");
+    // Diez plazas de prueba temporales; solo se guarda el hash del código y del token.
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS trial_passes (" +
+      "code_hash TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('available','active','revoked','expired')), " +
+      "created_at TEXT NOT NULL, activated_at TEXT, expires_at TEXT, " +
+      "device_hash TEXT, session_hash TEXT)"
+    );
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_trial_passes_status ON trial_passes(status, expires_at)");
 
     // Migración idempotente: registra una lista deportiva pública por defecto
     // una sola vez y la coloca primero en la cola de importación.
@@ -1008,22 +1151,23 @@ export class ChannelCatalogRoom {
       const where = admin ? "1=1" : "visible = 1 AND is_sports = 1";
       const filter = search ? " AND (lower(name) LIKE ? OR lower(group_title) LIKE ?)" : "";
       const params = search ? ["%" + search.toLowerCase() + "%", "%" + search.toLowerCase() + "%"] : [];
-      const countRows = Array.from(this.sql.exec(
-        "SELECT COUNT(*) AS total FROM channels WHERE " + where + filter,
-        ...params
-      ));
-      const total = Number(countRows[0] && countRows[0].total || 0);
-      const rows = Array.from(this.sql.exec(
+      // No contar toda la tabla en cada página: COUNT(*) recorría miles de
+      // canales y agotaba la cuota diaria gratuita de filas SQL leídas.
+      // Leemos solo una fila extra para determinar hasMore.
+      const queriedRows = Array.from(this.sql.exec(
         "SELECT id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible " +
         "FROM channels WHERE " + where + filter +
         " ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
-        ...params, limit, offset
+        ...params, limit + 1, offset
       ));
+      const hasMore = queriedRows.length > limit;
+      const rows = queriedRows.slice(0, limit);
       return response({
         configured: true,
-        total,
+        total: offset + rows.length,
+        totalIsEstimate: hasMore,
         offset,
-        hasMore: offset + rows.length < total,
+        hasMore,
         channels: rows.map(row => ({
           id: row.id,
           identifier: row.identifier,
@@ -1057,6 +1201,115 @@ export class ChannelCatalogRoom {
         licenseType: row.license_type,
         email: row.email,
         grantedAt: row.granted_at
+      });
+    }
+    if (path === "/trials" && request.method === "GET") {
+      const now = new Date().toISOString();
+      const row = Array.from(this.sql.exec(
+        "SELECT " +
+        "SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) AS available, " +
+        "SUM(CASE WHEN status = 'active' AND expires_at > ? THEN 1 ELSE 0 END) AS active, " +
+        "SUM(CASE WHEN status = 'active' AND expires_at <= ? THEN 1 ELSE 0 END) AS expired, " +
+        "SUM(CASE WHEN status = 'revoked' THEN 1 ELSE 0 END) AS revoked, " +
+        "COUNT(*) AS total FROM trial_passes",
+        now, now
+      ))[0] || {};
+      return response({
+        limit: 10,
+        available: Number(row.available || 0),
+        active: Number(row.active || 0),
+        expired: Number(row.expired || 0),
+        revoked: Number(row.revoked || 0),
+        total: Number(row.total || 0)
+      });
+    }
+
+    if (path === "/trials" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const passes = Array.isArray(payload && payload.passes) ? payload.passes : [];
+      if (passes.length < 1 || passes.length > 10 ||
+          !passes.every(item => /^[a-f0-9]{64}$/.test(String(item && item.codeHash || "")))) {
+        return response({ error: "Los códigos de prueba no tienen un formato válido." }, 400);
+      }
+      const now = new Date().toISOString();
+      const occupied = Array.from(this.sql.exec(
+        "SELECT COUNT(*) AS count FROM trial_passes WHERE status = 'available' OR (status = 'active' AND expires_at > ?)",
+        now
+      ))[0];
+      const remaining = Math.max(0, 10 - Number(occupied && occupied.count || 0));
+      const accepted = passes.slice(0, remaining);
+      for (const item of accepted) {
+        this.sql.exec(
+          "INSERT OR IGNORE INTO trial_passes (code_hash, status, created_at) VALUES (?, 'available', ?)",
+          String(item.codeHash), now
+        );
+      }
+      return response({
+        created: accepted.length,
+        remaining: Math.max(0, remaining - accepted.length),
+        limit: 10
+      }, accepted.length > 0 ? 201 : 409);
+    }
+
+    if (path === "/trials/redeem" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const codeHash = String(payload && payload.codeHash || "");
+      const deviceHash = String(payload && payload.deviceHash || "");
+      const sessionHash = String(payload && payload.sessionHash || "");
+      if (![codeHash, deviceHash, sessionHash].every(value => /^[a-f0-9]{64}$/.test(value))) {
+        return response({ error: "El código o la identificación del dispositivo no son válidos." }, 400);
+      }
+      const row = Array.from(this.sql.exec(
+        "SELECT code_hash, status FROM trial_passes WHERE code_hash = ?",
+        codeHash
+      ))[0];
+      if (!row || row.status !== "available") {
+        return response({ error: "El código VIP no existe, ya fue utilizado o no está disponible." }, 409);
+      }
+      const now = new Date();
+      const activatedAt = now.toISOString();
+      const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      this.sql.exec(
+        "UPDATE trial_passes SET status = 'active', activated_at = ?, expires_at = ?, device_hash = ?, session_hash = ? WHERE code_hash = ? AND status = 'available'",
+        activatedAt, expiresAt, deviceHash, sessionHash, codeHash
+      );
+      const activated = Array.from(this.sql.exec(
+        "SELECT status, device_hash, session_hash, expires_at FROM trial_passes WHERE code_hash = ?",
+        codeHash
+      ))[0];
+      if (!activated || activated.status !== "active" ||
+          activated.device_hash !== deviceHash || activated.session_hash !== sessionHash) {
+        return response({ error: "No se pudo activar el código VIP. Inténtalo de nuevo." }, 409);
+      }
+      return response({ activated: true, expiresAt });
+    }
+
+    if (path === "/trials/check" && request.method === "POST") {
+      let payload;
+      try { payload = await request.json(); } catch {
+        return response({ error: "JSON inválido." }, 400);
+      }
+      const sessionHash = String(payload && payload.sessionHash || "");
+      const deviceHash = String(payload && payload.deviceHash || "");
+      if (![sessionHash, deviceHash].every(value => /^[a-f0-9]{64}$/.test(value))) {
+        return response({ allowed: false, status: "invalid" }, 400);
+      }
+      const row = Array.from(this.sql.exec(
+        "SELECT expires_at FROM trial_passes WHERE session_hash = ? AND device_hash = ? AND status = 'active'",
+        sessionHash, deviceHash
+      ))[0];
+      const allowed = Boolean(row && Date.parse(row.expires_at) > Date.now());
+      return response({
+        allowed,
+        status: allowed ? "active" : row ? "expired" : "not_found",
+        licenseType: "trial",
+        expiresAt: row ? row.expires_at : null
       });
     }
 
