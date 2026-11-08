@@ -601,7 +601,7 @@ function randomHex(byteCount = 32) {
 
 async function trialIdentity(request, env) {
   const authorization = request.headers.get("Authorization") || "";
-  const token = authorization.replace(/^Bearer\\s+/i, "").trim();
+  const token = authorization.replace(/^Bearer\s+/i, "").trim();
   const deviceId = String(request.headers.get("X-DT360-Device-ID") || "").trim();
   // Los tokens VIP tienen 256 bits hexadecimales; no se confunden con tokens Google.
   if (!/^[a-f0-9]{64}$/i.test(token) || !/^[a-f0-9]{64}$/i.test(deviceId)) {
