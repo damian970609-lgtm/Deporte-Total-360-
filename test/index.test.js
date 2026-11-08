@@ -48,6 +48,90 @@ test("health responde sin clave de proveedor", async () => {
 });
 
 
+test("el catálogo público reutiliza la caché y evita lecturas repetidas del Durable Object", async () => {
+  installCache();
+  let catalogCalls = 0;
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return {
+          async fetch() {
+            catalogCalls++;
+            return new Response(JSON.stringify({
+              configured: true,
+              total: 200,
+              totalIsEstimate: true,
+              offset: 0,
+              hasMore: true,
+              channels: [{ id: "sports-1", name: "Canal deportivo", isSports: true }]
+            }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+        };
+      }
+    }
+  };
+  const path = "/api/channels?offset=0&limit=200";
+  const first = await worker.fetch(request(path), env);
+  const firstBody = await first.json();
+  const second = await worker.fetch(request(path), env);
+  const secondBody = await second.json();
+
+  assert.equal(first.status, 200);
+  assert.equal(firstBody.channels.length, 1);
+  assert.equal(first.headers.get("X-Data-Source"), "channel-catalog");
+  assert.equal(second.status, 200);
+  assert.equal(secondBody.channels[0].id, "sports-1");
+  assert.equal(second.headers.get("X-Data-Source"), "cache");
+  assert.equal(catalogCalls, 1);
+});
+
+test("el catálogo pagina con limit+1 sin ejecutar COUNT de toda la tabla", async () => {
+  let countQueryCalled = false;
+  let selectedLimit = 0;
+  const sql = {
+    exec(query, ...params) {
+      if (query.includes("SELECT COUNT(*) AS total FROM channels")) {
+        countQueryCalled = true;
+        return [{ total: 50000 }];
+      }
+      if (query.includes("SELECT id, identifier, name, stream_url")) {
+        selectedLimit = Number(params.at(-2));
+        return [
+          { id: "1", name: "Canal 1", stream_url: "https://example.com/1.m3u8", is_sports: 1, visible: 1 },
+          { id: "2", name: "Canal 2", stream_url: "https://example.com/2.m3u8", is_sports: 1, visible: 1 },
+          { id: "3", name: "Canal 3", stream_url: "https://example.com/3.m3u8", is_sports: 1, visible: 1 }
+        ];
+      }
+      return [];
+    }
+  };
+  const room = new ChannelCatalogRoom({
+    storage: {
+      sql,
+      async setAlarm() {}
+    }
+  }, {});
+  const response = await room.fetch(new Request(
+    "https://channel-catalog.internal/catalog?scope=public&offset=0&limit=2"
+  ));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(countQueryCalled, false);
+  assert.equal(selectedLimit, 3);
+  assert.equal(body.channels.length, 2);
+  assert.equal(body.hasMore, true);
+  assert.equal(body.total, 2);
+  assert.equal(body.totalIsEstimate, true);
+});
+
 test("el cron de las 08:00 de Guyana agenda la precarga diaria", async () => {
   const pending = [];
   worker.scheduled({ cron: "0 12 * * *" }, {}, {
