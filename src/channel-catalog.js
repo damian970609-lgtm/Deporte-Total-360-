@@ -1151,22 +1151,23 @@ export class ChannelCatalogRoom {
       const where = admin ? "1=1" : "visible = 1 AND is_sports = 1";
       const filter = search ? " AND (lower(name) LIKE ? OR lower(group_title) LIKE ?)" : "";
       const params = search ? ["%" + search.toLowerCase() + "%", "%" + search.toLowerCase() + "%"] : [];
-      const countRows = Array.from(this.sql.exec(
-        "SELECT COUNT(*) AS total FROM channels WHERE " + where + filter,
-        ...params
-      ));
-      const total = Number(countRows[0] && countRows[0].total || 0);
-      const rows = Array.from(this.sql.exec(
+      // No contar toda la tabla en cada página: COUNT(*) recorría miles de
+      // canales y agotaba la cuota diaria gratuita de filas SQL leídas.
+      // Leemos solo una fila extra para determinar hasMore.
+      const queriedRows = Array.from(this.sql.exec(
         "SELECT id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible " +
         "FROM channels WHERE " + where + filter +
         " ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
-        ...params, limit, offset
+        ...params, limit + 1, offset
       ));
+      const hasMore = queriedRows.length > limit;
+      const rows = queriedRows.slice(0, limit);
       return response({
         configured: true,
-        total,
+        total: offset + rows.length,
+        totalIsEstimate: hasMore,
         offset,
-        hasMore: offset + rows.length < total,
+        hasMore,
         channels: rows.map(row => ({
           id: row.id,
           identifier: row.identifier,
