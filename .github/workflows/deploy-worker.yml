@@ -74,10 +74,10 @@ jobs:
           CHANNELS_QUOTA_EXHAUSTED="false"
           if [[ "$CHANNELS_STATUS" == "200" ]]; then
             CHANNELS="$(cat "$CHANNELS_FILE")"
-          elif grep -q "Exceeded allowed rows written in Durable Objects free tier" "$CHANNELS_FILE"; then
+          elif grep -E -q "Exceeded allowed rows (written|read) in Durable Objects free tier" "$CHANNELS_FILE"; then
             CHANNELS_QUOTA_EXHAUSTED="true"
             CHANNELS='{"configured":false,"channels":[]}'
-            echo "::warning::La cuota diaria gratuita de escrituras está agotada. El catálogo se volverá a verificar después del reinicio diario de Cloudflare (00:00 UTC)."
+            echo "::warning::La cuota diaria gratuita de filas leídas/escritas del catálogo está agotada. Se omite solo esta comprobación del catálogo; el despliegue y las rutas de SportsAPI/OAuth se verifican por separado."
           else
             echo "::error::La ruta /api/channels respondió HTTP $CHANNELS_STATUS."
             sed -n '1,30p' "$CHANNELS_FILE" >&2
