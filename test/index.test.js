@@ -80,14 +80,18 @@ test("el cron programa solo las fuentes vencidas del catálogo", async () => {
   assert.equal((await waited).status, 202);
 });
 
-test("el refresco programado solo activa un lote cuando hay fuentes vencidas", async () => {
+test("el refresco programado excluye fuentes públicas con parámetros SQL válidos", async () => {
   const alarms = [];
   let initialization;
+  let dueQuery = "";
+  let dueParams = [];
   const state = {
     storage: {
       sql: {
-        exec(query) {
+        exec(query, ...params) {
           if (query.includes("SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?")) {
+            dueQuery = query;
+            dueParams = params;
             return [{ total: 3 }];
           }
           return [];
@@ -118,6 +122,9 @@ test("el refresco programado solo activa un lote cuando hay fuentes vencidas", a
     due: 3,
     message: "Se programaron solo las fuentes cuyo intervalo de actualización venció."
   });
+  assert.match(dueQuery, /id NOT IN \(\?, \?, \?, \?, \?, \?\)/);
+  assert.equal(dueQuery.includes("${BUILT_IN_SOURCE_SQL}"), false);
+  assert.equal(dueParams.length, 7);
   assert.equal(alarms.length, previousAlarmCount + 1);
 });
 
@@ -131,13 +138,13 @@ test("las importaciones de una fuente conservan hasta 50.000 canales", () => {
   assert.equal(selectAllChannels(channels).length, 50000);
 });
 
-test("el catálogo no siembra listas IPTV públicas automáticamente", () => {
-  const queries = [];
+test("el catálogo no siembra listas públicas y usa parámetros válidos al retirarlas", () => {
+  const calls = [];
   const state = {
     storage: {
       sql: {
-        exec(query) {
-          queries.push(query);
+        exec(query, ...params) {
+          calls.push({ query, params });
           return [];
         }
       },
@@ -146,9 +153,43 @@ test("el catálogo no siembra listas IPTV públicas automáticamente", () => {
   };
   new ChannelCatalogRoom(state, {});
   assert.equal(
-    queries.some(query => query.includes("INSERT INTO sources")),
+    calls.some(({ query }) => query.includes("INSERT INTO sources")),
     false
   );
+  const retirement = calls.find(({ query }) =>
+    query.includes("UPDATE sources SET status = 'imported'")
+  );
+  assert.ok(retirement);
+  assert.match(retirement.query, /id IN \(\?, \?, \?, \?, \?, \?\)/);
+  assert.equal(retirement.query.includes("${BUILT_IN_SOURCE_SQL}"), false);
+  assert.equal(retirement.params.length, 8);
+});
+
+test("el refresco manual excluye las fuentes públicas con parámetros SQL válidos", async () => {
+  let refreshCall;
+  const state = {
+    storage: {
+      sql: {
+        exec(query, ...params) {
+          if (query.includes("UPDATE sources SET status = 'queued'")) {
+            refreshCall = { query, params };
+          }
+          return [];
+        }
+      },
+      async setAlarm() {}
+    }
+  };
+  const room = new ChannelCatalogRoom(state, {});
+  const response = await room.fetch(new Request(
+    "https://channel-catalog.internal/refresh",
+    { method: "POST" }
+  ));
+  assert.equal(response.status, 202);
+  assert.ok(refreshCall);
+  assert.match(refreshCall.query, /id NOT IN \(\?, \?, \?, \?, \?, \?\)/);
+  assert.equal(refreshCall.query.includes("${BUILT_IN_SOURCE_SQL}"), false);
+  assert.equal(refreshCall.params.length, 6);
 });
 
 test("catálogo en vivo devuelve vacío cuando no está configurado", async () => {

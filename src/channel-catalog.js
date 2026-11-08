@@ -981,7 +981,7 @@ export class ChannelCatalogRoom {
       if (retiredDefaults.length === 0) {
         this.sql.exec(
           "UPDATE sources SET status = 'imported', import_offset = 0, next_refresh_at = ?, last_error = '' " +
-          "WHERE id IN (${BUILT_IN_SOURCE_SQL}) AND " +
+          "WHERE id IN (" + BUILT_IN_SOURCE_SQL + ") AND " +
           "(status != 'imported' OR import_offset != 0 OR next_refresh_at < ?)",
           BUILT_IN_SOURCE_RETIRE_AT,
           ...BUILT_IN_SOURCE_IDS,
@@ -1291,7 +1291,7 @@ export class ChannelCatalogRoom {
     if (path === "/scheduled-refresh" && request.method === "POST") {
       const dueRows = Array.from(this.sql.exec(
         "SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ? " +
-        "AND id NOT IN (${BUILT_IN_SOURCE_SQL})",
+        "AND id NOT IN (" + BUILT_IN_SOURCE_SQL + ")",
         Date.now(), ...BUILT_IN_SOURCE_IDS
       ));
       const due = Number(dueRows[0] && dueRows[0].total || 0);
@@ -1308,7 +1308,7 @@ export class ChannelCatalogRoom {
     if (path === "/refresh" && request.method === "POST") {
       this.sql.exec(
         "UPDATE sources SET status = 'queued', imported_count = 0, import_offset = 0, next_refresh_at = 0 " +
-        "WHERE status != 'importing' AND id NOT IN (${BUILT_IN_SOURCE_SQL})",
+        "WHERE status != 'importing' AND id NOT IN (" + BUILT_IN_SOURCE_SQL + ")",
         ...BUILT_IN_SOURCE_IDS
       );
       await this.state.storage.setAlarm(Date.now() + 1000);
@@ -1451,7 +1451,7 @@ export class ChannelCatalogRoom {
   async refreshBatch() {
     const due = Array.from(this.sql.exec(
       "SELECT id, url, label, status, imported_count, import_offset FROM sources WHERE next_refresh_at <= ? " +
-      "AND id NOT IN (${BUILT_IN_SOURCE_SQL}) " +
+      "AND id NOT IN (" + BUILT_IN_SOURCE_SQL + ") " +
       "ORDER BY next_refresh_at ASC, label COLLATE NOCASE LIMIT ?",
       Date.now(), ...BUILT_IN_SOURCE_IDS, REFRESH_BATCH_SIZE
     ));
