@@ -3,7 +3,7 @@ import { ChannelCatalogRoom, authorizeChatAccess, handleChannelRoutes } from "./
 const HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-DT360-Device-ID",
   "Content-Type": "application/json; charset=utf-8",
   "X-Content-Type-Options": "nosniff"
 };
@@ -1463,7 +1463,7 @@ export default {
       }
     }
 
-    if (path === "/api/license" || path.startsWith("/api/channels")) {
+    if (path === "/api/license" || path.startsWith("/api/channels") || path.startsWith("/api/trials/")) {
       return handleChannelRoutes(request, env, path);
     }
 
