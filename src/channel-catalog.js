@@ -31,8 +31,8 @@ const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
 // escrituras de Durable Objects. La APK consume páginas y mantiene una copia
 // local; 5.000 canales por fuente permiten selección manual sin importaciones
 // descontroladas de listas globales de decenas de miles de entradas.
-const MAX_PARSED_PLAYLIST_CHANNELS = 5000;
-const MAX_IMPORTED_CHANNELS = 5000;
+const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
+const MAX_IMPORTED_CHANNELS = 50000;
 const MAX_SOURCE_COUNT = 100;
 const MAX_CHANNEL_CATALOG_OFFSET = 5000000;
 const IMPORT_CHANNEL_BATCH_SIZE = 500;
