@@ -1349,15 +1349,15 @@ async function sportsApiProxy(request,env,route) {
     // horarios o marcadores antes del cierre, el usuario puede forzar refresh.
     const dateTtl = requestDate && requestDate < todayUtc
       ? 21600
-      : requestDate === todayUtc ? 21600 : 43200;
-    const isDailyDetail =
-      route.upstream.endsWith("/statistics") ||
-      route.upstream.endsWith("/standings");
+      : requestDate === todayUtc ? 43200 : 43200;
+    const isFixtureStatistics = route.upstream.endsWith("/statistics");
+    const isStandings = route.upstream.endsWith("/standings");
     const ttl = route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"
       ? 3600
       : route.upstream==="livescores" ? 15
       : route.upstream==="fixtures"||route.upstream==="races" ? dateTtl
-      : isDailyDetail ? 86400
+      : isFixtureStatistics ? 180
+      : isStandings ? 86400
       : route.upstream.startsWith("races/")&&route.upstream.endsWith("/results") ? 3600
       : route.upstream.startsWith("fixtures/")||route.upstream.startsWith("races/") ? 120
       : 120;
