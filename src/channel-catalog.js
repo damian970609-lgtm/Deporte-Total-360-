@@ -27,12 +27,45 @@ export function detectChannelLanguage(declaredLanguage, name = "", groupTitle = 
 const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
 // Admite catálogos grandes y procesa sus canales por lotes para no bloquear
 // una invocación del Durable Object ni agotar de golpe la cuota de escrituras.
+// Limita el impacto de cada lista importada en el presupuesto diario de
+// escrituras de Durable Objects. La APK consume páginas y mantiene una copia
+// local; 5.000 canales por fuente permiten selección manual sin importaciones
+// descontroladas de listas globales de decenas de miles de entradas.
 const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
 const MAX_IMPORTED_CHANNELS = 50000;
 const MAX_SOURCE_COUNT = 100;
 const MAX_CHANNEL_CATALOG_OFFSET = 5000000;
-const IMPORT_CHANNEL_BATCH_SIZE = 1000;
+const IMPORT_CHANNEL_BATCH_SIZE = 500;
 const REFRESH_BATCH_SIZE = 2;
+const BUILT_IN_SOURCE_IDS = [
+  "iptv-org-sports-default",
+  "freecasthub-sports-public",
+  "iptv-validated-sports",
+  "doubo-sports-public",
+  "shovo-global-sports-filter",
+  "free-tv-global-sports-filter"
+];
+const BUILT_IN_SOURCE_SQL = BUILT_IN_SOURCE_IDS.map(() => "?").join(", ");
+const BUILT_IN_SOURCE_RETIRE_AT = Date.UTC(2100, 0, 1);
+
+function isDurableObjectWriteQuotaError(error) {
+  return String(error && error.message || error).includes(
+    "Exceeded allowed rows written in Durable Objects free tier"
+  );
+}
+
+function recordCatalogMigration(sql, version) {
+  try {
+    sql.exec(
+      "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (?)",
+      version
+    );
+  } catch (error) {
+    // Un límite temporal de escrituras no debe impedir lecturas del catálogo.
+    if (!isDurableObjectWriteQuotaError(error)) throw error;
+    console.error("Cuota de escrituras agotada al registrar la migración del catálogo.");
+  }
+}
 // Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
 // escribir de nuevo miles de filas idénticas en el plan gratuito.
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -886,9 +919,7 @@ export class ChannelCatalogRoom {
         const message = String(error && error.message || error).toLowerCase();
         if (!message.includes("duplicate column name")) throw error;
       }
-      this.sql.exec(
-        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (1)"
-      );
+      recordCatalogMigration(this.sql, 1);
     }
     this.sql.exec("CREATE INDEX IF NOT EXISTS idx_channels_sports_visible ON channels(is_sports, visible, name)");
     this.sql.exec(
@@ -908,9 +939,7 @@ export class ChannelCatalogRoom {
         const message = String(error && error.message || error).toLowerCase();
         if (!message.includes("duplicate column name")) throw error;
       }
-      this.sql.exec(
-        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (4)"
-      );
+      recordCatalogMigration(this.sql, 4);
     }
     const sourceImportMigration = Array.from(this.sql.exec(
       "SELECT version FROM channel_catalog_schema_migrations WHERE version = 5"
@@ -922,9 +951,7 @@ export class ChannelCatalogRoom {
         const message = String(error && error.message || error).toLowerCase();
         if (!message.includes("duplicate column name")) throw error;
       }
-      this.sql.exec(
-        "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (5)"
-      );
+      recordCatalogMigration(this.sql, 5);
     }
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS favorites (" +
@@ -943,85 +970,29 @@ export class ChannelCatalogRoom {
 
     // Migración idempotente: registra una lista deportiva pública por defecto
     // una sola vez y la coloca primero en la cola de importación.
-    this.state.blockConcurrencyWhile(async () => {
-      const defaultSourceVersion = Array.from(this.sql.exec(
-        "SELECT version FROM channel_catalog_schema_migrations WHERE version = 2"
+    // Las listas públicas genéricas ya no se importan automáticamente.
+    // El administrador conserva sus fuentes guardadas y decide cuáles usar.
+    // Desactivar IDs predeterminados antiguos de forma idempotente, sin borrar
+    // las fuentes ni los canales que ya se hayan importado.
+    try {
+      const retiredDefaults = Array.from(this.sql.exec(
+        "SELECT version FROM channel_catalog_schema_migrations WHERE version = 6"
       ));
-      if (defaultSourceVersion.length === 0) {
-        const defaultSportsPlaylistUrl =
-          "https://iptv-org.github.io/iptv/categories/sports.m3u";
-        const defaultSource = Array.from(this.sql.exec(
-          "SELECT id FROM sources WHERE url = ?",
-          defaultSportsPlaylistUrl
-        ))[0];
-        if (defaultSource) {
-          this.sql.exec(
-            "UPDATE sources SET label = ?, status = 'queued', last_error = '', next_refresh_at = 0 WHERE id = ?",
-            "00 · IPTV-org Sports (pública)",
-            defaultSource.id
-          );
-        } else {
-          this.sql.exec(
-            "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0)",
-            "iptv-org-sports-default",
-            defaultSportsPlaylistUrl,
-            "00 · IPTV-org Sports (pública)"
-          );
-        }
+      if (retiredDefaults.length === 0) {
         this.sql.exec(
-          "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (2)"
+          "UPDATE sources SET status = 'imported', import_offset = 0, next_refresh_at = ?, last_error = '' " +
+          "WHERE id IN (${BUILT_IN_SOURCE_SQL}) AND " +
+          "(status != 'imported' OR import_offset != 0 OR next_refresh_at < ?)",
+          BUILT_IN_SOURCE_RETIRE_AT,
+          ...BUILT_IN_SOURCE_IDS,
+          BUILT_IN_SOURCE_RETIRE_AT
         );
-        await this.state.storage.setAlarm(Date.now() + 1000);
+        recordCatalogMigration(this.sql, 6);
       }
-
-      const sportsSourceVersion = Array.from(this.sql.exec(
-        "SELECT version FROM channel_catalog_schema_migrations WHERE version = 3"
-      ));
-      if (sportsSourceVersion.length === 0) {
-        const recommendedSportsSources = [
-          {
-            id: "freecasthub-sports-public",
-            url: "https://raw.githubusercontent.com/freecasthub/public-iptv/main/sports.m3u",
-            label: "FreecastHub · Deportes públicos"
-          },
-          {
-            id: "iptv-validated-sports",
-            url: "https://raw.githubusercontent.com/AdeelWajid/iptv_validated_list/main/playlists/categories/sports.m3u",
-            label: "IPTV Validated · Deportes"
-          },
-          {
-            id: "doubo-sports-public",
-            url: "https://cdn.jsdelivr.net/gh/streamline-iptv/iptv-playlists@dist/categories/sports.m3u",
-            label: "Doubo · Deportes públicos"
-          },
-          {
-            id: "shovo-global-sports-filter",
-            url: "https://shovo127.github.io/IPTV-By-Shovo/index.m3u",
-            label: "IPTV By Shovo · Global (filtro deportivo)"
-          },
-          {
-            id: "free-tv-global-sports-filter",
-            url: "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8",
-            label: "Free-TV · Global (filtro deportivo)"
-          }
-        ];
-        for (const source of recommendedSportsSources) {
-          const existing = Array.from(this.sql.exec(
-            "SELECT id FROM sources WHERE url = ?", source.url
-          ))[0];
-          if (!existing) {
-            this.sql.exec(
-              "INSERT INTO sources (id, url, label, status, next_refresh_at) VALUES (?, ?, ?, 'queued', 0)",
-              source.id, source.url, source.label
-            );
-          }
-        }
-        this.sql.exec(
-          "INSERT OR IGNORE INTO channel_catalog_schema_migrations (version) VALUES (3)"
-        );
-        await this.state.storage.setAlarm(Date.now() + 1000);
-      }
-    });
+    } catch (error) {
+      if (!isDurableObjectWriteQuotaError(error)) throw error;
+      console.error("Cuota agotada; se pospone la desactivación de fuentes predeterminadas.");
+    }
   }
 
   async fetch(request) {
@@ -1319,8 +1290,9 @@ export class ChannelCatalogRoom {
 
     if (path === "/scheduled-refresh" && request.method === "POST") {
       const dueRows = Array.from(this.sql.exec(
-        "SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ?",
-        Date.now()
+        "SELECT COUNT(*) AS total FROM sources WHERE next_refresh_at <= ? " +
+        "AND id NOT IN (${BUILT_IN_SOURCE_SQL})",
+        Date.now(), ...BUILT_IN_SOURCE_IDS
       ));
       const due = Number(dueRows[0] && dueRows[0].total || 0);
       if (due > 0) await this.state.storage.setAlarm(Date.now() + 1000);
@@ -1336,7 +1308,8 @@ export class ChannelCatalogRoom {
     if (path === "/refresh" && request.method === "POST") {
       this.sql.exec(
         "UPDATE sources SET status = 'queued', imported_count = 0, import_offset = 0, next_refresh_at = 0 " +
-        "WHERE status != 'importing'"
+        "WHERE status != 'importing' AND id NOT IN (${BUILT_IN_SOURCE_SQL})",
+        ...BUILT_IN_SOURCE_IDS
       );
       await this.state.storage.setAlarm(Date.now() + 1000);
       return response({
@@ -1478,8 +1451,9 @@ export class ChannelCatalogRoom {
   async refreshBatch() {
     const due = Array.from(this.sql.exec(
       "SELECT id, url, label, status, imported_count, import_offset FROM sources WHERE next_refresh_at <= ? " +
+      "AND id NOT IN (${BUILT_IN_SOURCE_SQL}) " +
       "ORDER BY next_refresh_at ASC, label COLLATE NOCASE LIMIT ?",
-      Date.now(), REFRESH_BATCH_SIZE
+      Date.now(), ...BUILT_IN_SOURCE_IDS, REFRESH_BATCH_SIZE
     ));
     let imported = 0;
     const results = [];

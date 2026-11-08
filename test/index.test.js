@@ -121,6 +121,36 @@ test("el refresco programado solo activa un lote cuando hay fuentes vencidas", a
   assert.equal(alarms.length, previousAlarmCount + 1);
 });
 
+
+
+test("las importaciones de una fuente conservan hasta 50.000 canales", () => {
+  const channels = Array.from({ length: 51000 }, (_, index) => ({
+    name: "Canal " + index,
+    url: "https://media.example/" + index + ".m3u8"
+  }));
+  assert.equal(selectAllChannels(channels).length, 50000);
+});
+
+test("el catálogo no siembra listas IPTV públicas automáticamente", () => {
+  const queries = [];
+  const state = {
+    storage: {
+      sql: {
+        exec(query) {
+          queries.push(query);
+          return [];
+        }
+      },
+      async setAlarm() {}
+    }
+  };
+  new ChannelCatalogRoom(state, {});
+  assert.equal(
+    queries.some(query => query.includes("INSERT INTO sources")),
+    false
+  );
+});
+
 test("catálogo en vivo devuelve vacío cuando no está configurado", async () => {
   const response = await worker.fetch(request("/api/live/sources"), {});
   const body = await response.json();
@@ -654,20 +684,25 @@ test("refresh acepta solo 0 o 1", async () => {
   assert.equal(upstreamCalled, false);
 });
 
-test("el limitador global reserva una ranura por consulta y mantiene el intervalo entre llamadas", async () => {
-  const values = new Map();
+test("el limitador global reserva ranuras sin consumir escrituras SQLite", async () => {
+  let storageReads = 0;
+  let storageWrites = 0;
   const state = {
     storage: {
-      async get(key) { return values.get(key); },
-      async put(key, value) { values.set(key, value); }
+      async get() { storageReads++; return Date.now() + 100000; },
+      async put() { storageWrites++; }
     },
-    blockConcurrencyWhile(callback) { return callback(); }
+    blockConcurrencyWhile() {
+      throw new Error("El limitador no debe inicializarse desde almacenamiento persistente.");
+    }
   };
   const limiter = new SportsApiRateLimiter(state);
   const first = await limiter.fetch();
   const second = await limiter.fetch();
   assert.equal((await first.json()).waitMs, 0);
   assert.ok((await second.json()).waitMs >= 6000);
+  assert.equal(storageReads, 0);
+  assert.equal(storageWrites, 0);
 });
 
 test("el proxy reserva una ranura global antes de consultar SportsAPI", async () => {
@@ -705,6 +740,37 @@ test("el proxy reserva una ranura global antes de consultar SportsAPI", async ()
   assert.equal(response.status, 200);
   assert.equal(reservations, 1);
   assert.equal(capturedUrl.pathname, "/v2/fixtures");
+});
+
+
+
+test("el proxy identifica por separado un fallo del limitador y no consume SportsAPI", async () => {
+  let upstreamCalled = false;
+  globalThis.fetch = async () => {
+    upstreamCalled = true;
+    return new Response(JSON.stringify({ data: [], meta: { count: 0 } }), { status: 200 });
+  };
+  const env = {
+    SPORTAPI_API_KEY: "test",
+    SPORTSAPI_RATE_LIMITER: {
+      idFromName() { return "sportsapi-account-free"; },
+      get() {
+        return {
+          async fetch() {
+            throw new Error("Exceeded allowed rows written in Durable Objects free tier");
+          }
+        };
+      }
+    }
+  };
+  const response = await worker.fetch(
+    request("/api/sportsapi/fixtures?date=2026-11-07&sport=football&page=0"),
+    env
+  );
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "sportsapi_rate_limiter_unavailable");
+  assert.equal(upstreamCalled, false);
 });
 
 test("proxy SportsAPI.app admite resultados de carreras con sesión", async () => {
