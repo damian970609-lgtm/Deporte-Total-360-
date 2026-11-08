@@ -1474,10 +1474,13 @@ export class ChannelCatalogRoom {
         if (contentType.includes("text/html")) throw new Error("La URL abre HTML, no una lista multimedia directa.");
         const text = await readTextLimited(sourceResponse);
         const parsedPlaylist = parsePlaylist(text, fetched.finalUrl);
-        const parsed = selectAllChannels(parsedPlaylist.channels);
+        // Deporte Total 360 mantiene únicamente señales deportivas en su
+        // catálogo compartido. Las fuentes originales se conservan para que
+        // el administrador pueda volver a importarlas o editarlas.
+        const parsed = selectSportsChannels(parsedPlaylist.channels);
         if (parsed.length === 0) {
           throw new Error("La lista " + parsedPlaylist.format.toUpperCase() +
-            " no contiene canales con URLs multimedia directas compatibles.");
+            " no contiene canales marcados o reconocidos como deportivos.");
         }
         // La fuente pudo retirarse mientras se descargaba. En ese caso no se
         // añaden canales nuevos después de que el administrador la haya quitado.
