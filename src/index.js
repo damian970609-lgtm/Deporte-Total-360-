@@ -1309,24 +1309,33 @@ async function sportsApiProxy(request,env,route) {
     // Límite global por cuenta: la clave es compartida por todos los usuarios.
     // El Durable Object asigna una ranura cada 6,1 s (máximo 10 peticiones/min).
     if (env.SPORTSAPI_RATE_LIMITER) {
-      const limiterId = env.SPORTSAPI_RATE_LIMITER.idFromName("sportsapi-account-free");
-      const limiter = env.SPORTSAPI_RATE_LIMITER.get(limiterId);
-      const slotResponse = await limiter.fetch("https://sportsapi-rate-limiter.internal/acquire");
-      if (!slotResponse.ok) {
-        return json({error:{code:"sportsapi_rate_limiter_unavailable",message:"No se pudo reservar una consulta segura de SportsAPI."}},503,{"Retry-After":"30"});
-      }
-      const slot = await slotResponse.json();
-      if (Number(slot.waitMs) > 0) {
-        await new Promise(resolve => setTimeout(resolve, Number(slot.waitMs)));
-      }
-      // Otra petición puede haber llenado la caché mientras esta esperaba.
-      const afterWaitCache = forceRefresh ? null : await cacheMatch(cache, cacheKey);
-      if (afterWaitCache) {
-        const cachedPayload = await afterWaitCache.json();
-        return json(cachedPayload, 200, {
-          "Cache-Control": afterWaitCache.headers.get("Cache-Control") || "public, max-age=120",
-          "X-Data-Source": "cache"
-        });
+      try {
+        const limiterId = env.SPORTSAPI_RATE_LIMITER.idFromName("sportsapi-account-free");
+        const limiter = env.SPORTSAPI_RATE_LIMITER.get(limiterId);
+        const slotResponse = await limiter.fetch("https://sportsapi-rate-limiter.internal/acquire");
+        if (!slotResponse.ok) {
+          return json({error:{code:"sportsapi_rate_limiter_unavailable",message:"No se pudo reservar una consulta segura de SportsAPI."}},503,{"Retry-After":"30"});
+        }
+        const slot = await slotResponse.json();
+        if (Number(slot.waitMs) > 0) {
+          await new Promise(resolve => setTimeout(resolve, Number(slot.waitMs)));
+        }
+        // Otra petición puede haber llenado la caché mientras esta esperaba.
+        const afterWaitCache = forceRefresh ? null : await cacheMatch(cache, cacheKey);
+        if (afterWaitCache) {
+          const cachedPayload = await afterWaitCache.json();
+          return json(cachedPayload, 200, {
+            "Cache-Control": afterWaitCache.headers.get("Cache-Control") || "public, max-age=120",
+            "X-Data-Source": "cache"
+          });
+        }
+      } catch (error) {
+        console.error("SportsAPI rate limiter unavailable:", String(error && error.message || error));
+        return json(
+          {error:{code:"sportsapi_rate_limiter_unavailable",message:"El limitador de consultas no está disponible temporalmente."}},
+          503,
+          {"Retry-After":"30"}
+        );
       }
     }
     const upstream=await fetch(upstreamUrl,{method:"GET",headers:{"Authorization":"Bearer "+apiKey,"Accept":"application/json"}});
@@ -1350,20 +1359,19 @@ async function sportsApiProxy(request,env,route) {
 }
 
 export class SportsApiRateLimiter {
-  constructor(state) {
-    this.state = state;
+  constructor() {
+    // La reserva vive solo en memoria: escribir nextAllowedAt en SQLite por
+    // cada consulta agotaba la cuota diaria compartida de filas escritas de
+    // Durable Objects y terminaba bloqueando el proxy de SportsAPI.
+    // Si el objeto se recrea, se reinicia el intervalo; la APK mantiene su
+    // propia cola secuencial y el proveedor sigue protegido por su Retry-After.
     this.nextAllowedAt = 0;
-    this.ready = state.blockConcurrencyWhile(async () => {
-      this.nextAllowedAt = Number(await state.storage.get("nextAllowedAt")) || 0;
-    });
   }
 
   async fetch() {
-    await this.ready;
     const now = Date.now();
     const slotAt = Math.max(now, this.nextAllowedAt);
     this.nextAllowedAt = slotAt + 6100;
-    await this.state.storage.put("nextAllowedAt", this.nextAllowedAt);
     return json({ waitMs: Math.max(0, slotAt - now), intervalMs: 6100 });
   }
 }
