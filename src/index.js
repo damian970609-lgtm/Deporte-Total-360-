@@ -515,6 +515,41 @@ async function cachePut(cache, key, response) {
   }
 }
 
+async function cachedPublicChannelCatalog(request, env, path) {
+  const cache = globalThis.caches?.default;
+  const cacheKey = new Request(request.url, { method: "GET" });
+  const cached = await cacheMatch(cache, cacheKey);
+  if (cached) {
+    const output = new Response(cached.body, cached);
+    output.headers.set("X-Data-Source", "cache");
+    return output;
+  }
+
+  const upstream = await handleChannelRoutes(request, env, path);
+  if (!upstream.ok) return upstream;
+
+  let payload;
+  try {
+    payload = await upstream.json();
+  } catch {
+    return json({
+      error: {
+        code: "invalid_channel_catalog_response",
+        message: "El catálogo público devolvió una respuesta no válida."
+      }
+    }, 502);
+  }
+
+  // Catálogo público compartido: dos minutos de caché reducen llamadas al
+  // Durable Object sin retrasar demasiado cambios de selección/importación.
+  const cachedResponse = json(payload, upstream.status, {
+    "Cache-Control": "public, max-age=120",
+    "X-Data-Source": "channel-catalog"
+  });
+  await cachePut(cache, cacheKey, cachedResponse.clone());
+  return cachedResponse;
+}
+
 function buildUpstreamParams(incoming, config) {
   const params = new URLSearchParams(config.fixed || {});
   const seen = new Set();
@@ -1545,6 +1580,10 @@ export default {
           }
         }, 503, { "Retry-After": "15" });
       }
+    }
+
+    if (path === "/api/channels" && request.method === "GET") {
+      return cachedPublicChannelCatalog(request, env, path);
     }
 
     if (path === "/api/license" || path.startsWith("/api/channels") || path.startsWith("/api/trials/")) {
