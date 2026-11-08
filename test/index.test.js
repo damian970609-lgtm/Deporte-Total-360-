@@ -48,6 +48,162 @@ test("health responde sin clave de proveedor", async () => {
 });
 
 
+test("el cron de las 08:00 de Guyana agenda la precarga diaria", async () => {
+  const pending = [];
+  worker.scheduled({ cron: "0 12 * * *" }, {}, {
+    waitUntil(promise) {
+      pending.push(promise);
+    }
+  });
+  assert.equal(pending.length, 1);
+  await Promise.all(pending);
+});
+
+test("un pase VIP se canjea una vez, se liga al dispositivo y habilita favoritos sin Google", async () => {
+  const trialRows = new Map();
+  const sql = {
+    exec(query, ...params) {
+      if (query.includes("SELECT COUNT(*) AS count FROM trial_passes WHERE status = 'available'")) {
+        const now = Date.parse(params[0]);
+        const occupied = [...trialRows.values()].filter(row =>
+          row.status === "available" ||
+          (row.status === "active" && Date.parse(row.expires_at) > now)
+        ).length;
+        return [{ count: occupied }];
+      }
+      if (query.includes("INSERT OR IGNORE INTO trial_passes")) {
+        const [codeHash, createdAt] = params;
+        if (!trialRows.has(codeHash)) {
+          trialRows.set(codeHash, {
+            code_hash: codeHash,
+            status: "available",
+            created_at: createdAt
+          });
+        }
+        return [];
+      }
+      if (query.includes("SELECT code_hash, status FROM trial_passes WHERE code_hash = ?")) {
+        const row = trialRows.get(params[0]);
+        return row ? [{ code_hash: row.code_hash, status: row.status }] : [];
+      }
+      if (query.includes("UPDATE trial_passes SET status = 'active'")) {
+        const [activatedAt, expiresAt, deviceHash, sessionHash, codeHash] = params;
+        const row = trialRows.get(codeHash);
+        if (row && row.status === "available") {
+          Object.assign(row, {
+            status: "active",
+            activated_at: activatedAt,
+            expires_at: expiresAt,
+            device_hash: deviceHash,
+            session_hash: sessionHash
+          });
+        }
+        return [];
+      }
+      if (query.includes("SELECT status, device_hash, session_hash, expires_at FROM trial_passes")) {
+        const row = trialRows.get(params[0]);
+        return row ? [{
+          status: row.status,
+          device_hash: row.device_hash,
+          session_hash: row.session_hash,
+          expires_at: row.expires_at
+        }] : [];
+      }
+      if (query.includes("SELECT expires_at FROM trial_passes WHERE session_hash = ?")) {
+        const row = [...trialRows.values()].find(item =>
+          item.session_hash === params[0] && item.device_hash === params[1] &&
+          item.status === "active"
+        );
+        return row ? [{ expires_at: row.expires_at }] : [];
+      }
+      if (query.includes("SELECT SUM(CASE WHEN status = 'available'")) {
+        const now = Date.parse(params[0]);
+        const values = [...trialRows.values()];
+        return [{
+          available: values.filter(row => row.status === "available").length,
+          active: values.filter(row => row.status === "active" && Date.parse(row.expires_at) > now).length,
+          expired: values.filter(row => row.status === "active" && Date.parse(row.expires_at) <= now).length,
+          revoked: values.filter(row => row.status === "revoked").length,
+          total: values.length
+        }];
+      }
+      if (query.includes("SELECT f.channel_id FROM favorites")) return [];
+      return [];
+    }
+  };
+  const room = new ChannelCatalogRoom({
+    storage: {
+      sql,
+      async setAlarm() {}
+    }
+  }, {});
+  const code = "ABCD1234EF567890ABCD";
+  const codeHash = [...new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(code)
+  ))].map(value => value.toString(16).padStart(2, "0")).join("");
+  const seeded = await room.fetch(new Request("https://channel-catalog.internal/trials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passes: [{ codeHash }] })
+  }));
+  assert.equal(seeded.status, 201);
+
+  const env = {
+    CHANNEL_CATALOG: {
+      idFromName(name) {
+        assert.equal(name, "deporte-total-360-channel-catalog");
+        return name;
+      },
+      get() {
+        return { fetch: request => room.fetch(request) };
+      }
+    }
+  };
+  const deviceId = "b".repeat(64);
+  const redeem = () => handleChannelRoutes(new Request(
+    "https://worker.example/api/trials/redeem",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, deviceId })
+    }
+  ), env, "/api/trials/redeem");
+
+  const first = await redeem();
+  assert.equal(first.status, 200);
+  const session = await first.json();
+  assert.equal(session.activated, true);
+  assert.equal(session.licenseType, "trial");
+  assert.ok(Date.parse(session.expiresAt) > Date.now());
+
+  const second = await redeem();
+  assert.equal(second.status, 409);
+
+  const favorites = await handleChannelRoutes(new Request(
+    "https://worker.example/api/channels/favorites",
+    {
+      headers: {
+        Authorization: "Bearer " + session.sessionToken,
+        "X-DT360-Device-ID": deviceId
+      }
+    }
+  ), env, "/api/channels/favorites");
+  assert.equal(favorites.status, 200);
+  assert.deepEqual(await favorites.json(), { channelIds: [] });
+
+  const wrongDevice = await handleChannelRoutes(new Request(
+    "https://worker.example/api/channels/favorites",
+    {
+      headers: {
+        Authorization: "Bearer " + session.sessionToken,
+        "X-DT360-Device-ID": "c".repeat(64)
+      }
+    }
+  ), env, "/api/channels/favorites");
+  assert.equal(wrongDevice.status, 401);
+});
+
 test("el cron programa solo las fuentes vencidas del catálogo", async () => {
   let requestedPath = "";
   let waited;
