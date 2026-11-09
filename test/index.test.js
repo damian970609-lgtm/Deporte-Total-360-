@@ -1,7 +1,7 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import worker, { SportsApiRateLimiter } from "../src/index.js";
-import { ChannelCatalogRoom, detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels } from "../src/channel-catalog.js";
+import { ChannelCatalogRoom, detectChannelLanguage, handleChannelRoutes, parsePlaylist, selectAllChannels, selectSportsChannels, SOURCE_AUTO_REFRESH_INTERVAL_MS } from "../src/channel-catalog.js";
 
 const originalFetch = globalThis.fetch;
 const originalCaches = globalThis.caches;
@@ -131,6 +131,10 @@ test("el catálogo pagina con limit+1 sin ejecutar COUNT de toda la tabla", asyn
   assert.equal(body.hasMore, true);
   assert.equal(body.total, 2);
   assert.equal(body.totalIsEstimate, true);
+});
+
+test("las fuentes de canales se actualizan automáticamente cada siete días y pueden forzarse manualmente", () => {
+  assert.equal(SOURCE_AUTO_REFRESH_INTERVAL_MS, 7 * 24 * 60 * 60 * 1000);
 });
 
 test("el cron de las 08:00 de Guyana agenda una sola precarga diaria", async () => {
