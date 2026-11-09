@@ -66,9 +66,10 @@ function recordCatalogMigration(sql, version) {
     console.error("Cuota de escrituras agotada al registrar la migración del catálogo.");
   }
 }
-// Las fuentes públicas no cambian cada pocas horas; refrescar a diario evita
-// escribir de nuevo miles de filas idénticas en el plan gratuito.
-const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// Las fuentes M3U se actualizan automáticamente cada siete días para
+// reducir escrituras repetitivas en Durable Objects. La cuenta administradora
+// conserva la actualización manual inmediata desde Damián APK.
+export const SOURCE_AUTO_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const SPORTS_WORDS = /\b(sports?|deportes?|espn|fox sports|tudn|bein sports|dazn|futbol|fútbol|football|soccer|basketball|nba|mlb|ufc|mma|motogp|formula 1|f1|tennis|tenis|golf|rugby|cricket|baseball|hockey|volleyball|voleibol|sportv|gol tv|tyc sports|win sports|teledeporte|liga mx|champions)\b/i;
 
 function response(data, status = 200) {
@@ -1786,7 +1787,7 @@ export class ChannelCatalogRoom {
         } else {
           this.sql.exec(
             "UPDATE sources SET status = 'imported', format = ?, last_imported_at = ?, last_error = '', imported_count = ?, import_offset = 0, next_refresh_at = ? WHERE id = ?",
-            parsedPlaylist.format, timestamp, totalImported, Date.now() + REFRESH_INTERVAL_MS, source.id
+            parsedPlaylist.format, timestamp, totalImported, Date.now() + SOURCE_AUTO_REFRESH_INTERVAL_MS, source.id
           );
           results.push({
             label: source.label,
