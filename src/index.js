@@ -540,10 +540,11 @@ async function cachedPublicChannelCatalog(request, env, path) {
     }, 502);
   }
 
-  // Catálogo público compartido: dos minutos de caché reducen llamadas al
-  // Durable Object sin retrasar demasiado cambios de selección/importación.
+  // El catálogo no cambia en cada sondeo de En Vivo. Diez minutos en la
+  // caché perimetral evitan volver a leer miles de filas SQL por dispositivo.
+  // La APK conserva además un snapshot local corto y actualiza al vencerlo.
   const cachedResponse = json(payload, upstream.status, {
-    "Cache-Control": "public, max-age=120",
+    "Cache-Control": "public, max-age=600",
     "X-Data-Source": "channel-catalog"
   });
   await cachePut(cache, cacheKey, cachedResponse.clone());
@@ -1494,15 +1495,15 @@ async function warmDailyAgendaCache(env) {
 
 export default {
   async scheduled(controller, env, ctx) {
+    // Un único ciclo diario: limita lecturas del Durable Object y precalienta
+    // la cartelera a las 08:00 de Guyana (12:00 UTC).
+    if (controller.cron !== "0 12 * * *") return;
     if (env.CHANNEL_CATALOG) {
       const id = env.CHANNEL_CATALOG.idFromName("deporte-total-360-channel-catalog");
       const stub = env.CHANNEL_CATALOG.get(id);
       ctx.waitUntil(stub.fetch(new Request("https://channel-catalog.internal/scheduled-refresh", { method: "POST" })));
     }
-    // 12:00 UTC = 08:00 en Guyana. Una única precarga antes de los eventos.
-    if (controller.cron === "0 12 * * *") {
-      ctx.waitUntil(warmDailyAgendaCache(env));
-    }
+    ctx.waitUntil(warmDailyAgendaCache(env));
   },
   async fetch(request, env = {}) {
     if (request.method === "OPTIONS") {
