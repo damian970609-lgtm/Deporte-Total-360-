@@ -86,6 +86,7 @@ test("el catálogo público reutiliza la caché y evita lecturas repetidas del D
   assert.equal(first.status, 200);
   assert.equal(firstBody.channels.length, 1);
   assert.equal(first.headers.get("X-Data-Source"), "channel-catalog");
+  assert.equal(first.headers.get("Cache-Control"), "public, max-age=600");
   assert.equal(second.status, 200);
   assert.equal(secondBody.channels[0].id, "sports-1");
   assert.equal(second.headers.get("X-Data-Source"), "cache");
@@ -132,7 +133,7 @@ test("el catálogo pagina con limit+1 sin ejecutar COUNT de toda la tabla", asyn
   assert.equal(body.totalIsEstimate, true);
 });
 
-test("el cron de las 08:00 de Guyana agenda la precarga diaria", async () => {
+test("el cron de las 08:00 de Guyana agenda una sola precarga diaria", async () => {
   const pending = [];
   worker.scheduled({ cron: "0 12 * * *" }, {}, {
     waitUntil(promise) {
@@ -141,6 +142,28 @@ test("el cron de las 08:00 de Guyana agenda la precarga diaria", async () => {
   });
   assert.equal(pending.length, 1);
   await Promise.all(pending);
+});
+
+test("los cron antiguos no despiertan el catálogo Durable Object", () => {
+  let durableObjectCalls = 0;
+  worker.scheduled({ cron: "0 0 * * *" }, {
+    CHANNEL_CATALOG: {
+      idFromName() { return "catalog"; },
+      get() {
+        return {
+          fetch() {
+            durableObjectCalls++;
+            return Promise.resolve(new Response("ok"));
+          }
+        };
+      }
+    }
+  }, {
+    waitUntil() {
+      throw new Error("No debe programarse ninguna tarea fuera del cron diario.");
+    }
+  });
+  assert.equal(durableObjectCalls, 0);
 });
 
 test("un pase VIP se canjea una vez, se liga al dispositivo y habilita favoritos sin Google", async () => {
@@ -290,7 +313,7 @@ test("un pase VIP se canjea una vez, se liga al dispositivo y habilita favoritos
 
 test("el cron programa solo las fuentes vencidas del catálogo", async () => {
   let requestedPath = "";
-  let waited;
+  const pending = [];
   const env = {
     CHANNEL_CATALOG: {
       idFromName(name) {
@@ -310,14 +333,15 @@ test("el cron programa solo las fuentes vencidas del catálogo", async () => {
       }
     }
   };
-  worker.scheduled({}, env, {
+  worker.scheduled({ cron: "0 12 * * *" }, env, {
     waitUntil(promise) {
-      waited = promise;
+      pending.push(promise);
     }
   });
   assert.equal(requestedPath, "/scheduled-refresh");
-  assert.ok(waited);
-  assert.equal((await waited).status, 202);
+  assert.equal(pending.length, 2);
+  const responses = await Promise.all(pending);
+  assert.equal(responses[0].status, 202);
 });
 
 test("el refresco programado excluye fuentes públicas con parámetros SQL válidos", async () => {
