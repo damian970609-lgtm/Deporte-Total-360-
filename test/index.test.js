@@ -1591,7 +1591,7 @@ test("el administrador puede enviar un lote para completar exactamente 100 lista
   }
 });
 
-test("el parser importa todos los canales, incluidos los que no son deportivos", () => {
+test("el selector de importación conserva canales deportivos y generales en el inventario privado", () => {
   const channels = [
     { name: "Noticias", url: "https://media.example/news.m3u8", isSports: 0 },
     { name: "Deportes", url: "https://media.example/sports.m3u8", isSports: 1 }

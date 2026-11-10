@@ -203,3 +203,8 @@ lista, salvo que una importación traiga un idioma explícito nuevo.
 
 Ruta de administración: `PATCH /api/channels/admin/channels/{id}/language`.
 Valores admitidos: `es`, `en` y `unknown`.
+
+
+### Inventario privado de listas IPTV
+
+El importador conserva todos los canales que el parser pueda validar con una URL multimedia compatible, incluidos los canales generales. La etiqueta deportiva se conserva como clasificación: solo afecta a la publicación en la ruta pública de Canales deportivos. La vista de administración pagina el inventario completo y confirma el total al alcanzar el último bloque. La reimportación manual desde Damián APK vuelve a procesar las listas guardadas en segundo plano.
