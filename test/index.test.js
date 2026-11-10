@@ -102,12 +102,12 @@ test("el catálogo pagina con limit+1 sin ejecutar COUNT de toda la tabla", asyn
         countQueryCalled = true;
         return [{ total: 50000 }];
       }
-      if (query.includes("SELECT id, identifier, name, stream_url")) {
+      if (query.includes("SELECT id, identifier, tvg_id, name, stream_url")) {
         selectedLimit = Number(params.at(-2));
         return [
-          { id: "1", name: "Canal 1", stream_url: "https://example.com/1.m3u8", is_sports: 1, visible: 1 },
-          { id: "2", name: "Canal 2", stream_url: "https://example.com/2.m3u8", is_sports: 1, visible: 1 },
-          { id: "3", name: "Canal 3", stream_url: "https://example.com/3.m3u8", is_sports: 1, visible: 1 }
+          { id: "1", identifier: "id-1", tvg_id: "ESPN2.us", name: "Canal 1", stream_url: "https://example.com/1.m3u8", is_sports: 1, visible: 1 },
+          { id: "2", identifier: "id-2", tvg_id: "sports.2", name: "Canal 2", stream_url: "https://example.com/2.m3u8", is_sports: 1, visible: 1 },
+          { id: "3", identifier: "id-3", tvg_id: "", name: "Canal 3", stream_url: "https://example.com/3.m3u8", is_sports: 1, visible: 1 }
         ];
       }
       return [];
@@ -128,6 +128,8 @@ test("el catálogo pagina con limit+1 sin ejecutar COUNT de toda la tabla", asyn
   assert.equal(countQueryCalled, false);
   assert.equal(selectedLimit, 3);
   assert.equal(body.channels.length, 2);
+  assert.equal(body.channels[0].tvgId, "ESPN2.us");
+  assert.equal(body.channels[1].tvgId, "sports.2");
   assert.equal(body.hasMore, true);
   assert.equal(body.total, 2);
   assert.equal(body.totalIsEstimate, true);
@@ -1663,6 +1665,19 @@ test("importa CSV y XML ASX además de M3U, PLS, XSPF, JSON y TXT", () => {
   assert.equal(xml.format, "xml");
   assert.equal(xml.channels.length, 1);
   assert.equal(xml.channels[0].isSports, 1);
+});
+
+test("la importación M3U conserva tvg-id original para enlazar programas XMLTV", () => {
+  const result = parsePlaylist(
+    '#EXTM3U\\n' +
+    '#EXTINF:-1 tvg-id="ESPN2.us" tvg-name="ESPN 2 HD" group-title="Sports",ESPN 2 HD\\n' +
+    'https://media.example/espn2.m3u8\\n',
+    "https://lists.example/sports.m3u"
+  );
+  assert.equal(result.format, "m3u");
+  assert.equal(result.channels.length, 1);
+  assert.equal(result.channels[0].tvgId, "ESPN2.us");
+  assert.equal(result.channels[0].name, "ESPN 2 HD");
 });
 
 test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {

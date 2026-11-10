@@ -165,6 +165,7 @@ function parseM3u(text, sourceUrl) {
       const declaredLanguage = attrs["tvg-language"] || attrs["language"] || attrs["lang"] || "";
       channels.push({
         name,
+        tvgId: cleanText(attrs["tvg-id"] || "", 200),
         url: streamUrl,
         logoUrl: validPublicHttpsUrl(attrs["tvg-logo"]) ? attrs["tvg-logo"] : "",
         groupTitle: group,
@@ -202,6 +203,7 @@ function channelFromPlaylistEntry(nameValue, urlValue, sourceUrl, groupTitle = "
   const group = cleanText(groupTitle, 100);
   return {
     name,
+    tvgId: "",
     url: streamUrl,
     logoUrl: validPublicHttpsUrl(logoValue) ? logoValue : "",
     groupTitle: group,
@@ -1030,7 +1032,7 @@ export class ChannelCatalogRoom {
     this.sql = state.storage.sql;
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS channels (" +
-      "id TEXT PRIMARY KEY, identifier TEXT NOT NULL UNIQUE, name TEXT NOT NULL, " +
+      "id TEXT PRIMARY KEY, identifier TEXT NOT NULL UNIQUE, tvg_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, " +
       "stream_url TEXT NOT NULL UNIQUE, logo_url TEXT NOT NULL DEFAULT '', " +
       "group_title TEXT NOT NULL DEFAULT '', is_sports INTEGER NOT NULL DEFAULT 0, " +
       "language TEXT NOT NULL DEFAULT 'unknown', visible INTEGER NOT NULL DEFAULT 0, " +
@@ -1057,6 +1059,36 @@ export class ChannelCatalogRoom {
         if (!message.includes("duplicate column name")) throw error;
       }
       recordCatalogMigration(this.sql, 1);
+    }
+    // tvg_id conserva el identificador original de XMLTV/M3U. El esquema
+    // anterior no lo tenía, así que se amplía de forma idempotente. Si se agota
+    // temporalmente la cuota de escrituras, las consultas antiguas siguen
+    // funcionando y la migración se reintentará en la siguiente inicialización.
+    this.channelTvgIdReady = true;
+    try {
+      const tvgIdMigration = Array.from(this.sql.exec(
+        "SELECT version FROM channel_catalog_schema_migrations WHERE version = 7"
+      ));
+      if (tvgIdMigration.length === 0) {
+        try {
+          this.sql.exec("ALTER TABLE channels ADD COLUMN tvg_id TEXT NOT NULL DEFAULT ''");
+        } catch (error) {
+          const message = String(error && error.message || error).toLowerCase();
+          if (message.includes("duplicate column name")) {
+            // La columna ya existe, por ejemplo, en un Durable Object nuevo.
+          } else if (isDurableObjectWriteQuotaError(error)) {
+            this.channelTvgIdReady = false;
+            console.error("Cuota de escrituras agotada; se pospone la migración tvg_id.");
+          } else {
+            throw error;
+          }
+        }
+        if (this.channelTvgIdReady) recordCatalogMigration(this.sql, 7);
+      }
+    } catch (error) {
+      if (!isDurableObjectWriteQuotaError(error)) throw error;
+      this.channelTvgIdReady = false;
+      console.error("Cuota agotada; se pospone la comprobación de la migración tvg_id.");
     }
     this.sql.exec("CREATE INDEX IF NOT EXISTS idx_channels_sports_visible ON channels(is_sports, visible, name)");
     this.sql.exec(
@@ -1156,8 +1188,9 @@ export class ChannelCatalogRoom {
       // No contar toda la tabla en cada página: COUNT(*) recorría miles de
       // canales y agotaba la cuota diaria gratuita de filas SQL leídas.
       // Leemos solo una fila extra para determinar hasMore.
+      const tvgIdColumn = this.channelTvgIdReady ? "tvg_id" : "'' AS tvg_id";
       const queriedRows = Array.from(this.sql.exec(
-        "SELECT id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible " +
+        "SELECT id, identifier, " + tvgIdColumn + ", name, stream_url, logo_url, group_title, is_sports, language, visible " +
         "FROM channels WHERE " + where + filter +
         " ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
         ...params, limit + 1, offset
@@ -1173,6 +1206,7 @@ export class ChannelCatalogRoom {
         channels: rows.map(row => ({
           id: row.id,
           identifier: row.identifier,
+          tvgId: row.tvg_id || "",
           name: row.name,
           url: row.stream_url,
           logoUrl: row.logo_url,
@@ -1754,20 +1788,40 @@ export class ChannelCatalogRoom {
           ))[0];
           if (blocked) continue;
           const identifier = await identifierFor(channel.name, channel.url);
-          this.sql.exec(
-            "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
-            "name = excluded.name, identifier = excluded.identifier, logo_url = excluded.logo_url, " +
-            "group_title = excluded.group_title, is_sports = excluded.is_sports, " +
-            "language = CASE WHEN excluded.language != 'unknown' THEN excluded.language ELSE channels.language END, " +
-            "updated_at = excluded.updated_at WHERE " +
-            "channels.name != excluded.name OR channels.identifier != excluded.identifier OR " +
-            "channels.logo_url != excluded.logo_url OR channels.group_title != excluded.group_title OR " +
-            "channels.is_sports != excluded.is_sports OR " +
-            "(excluded.language != 'unknown' AND channels.language != excluded.language)",
-            identifier, identifier, channel.name, channel.url, channel.logoUrl,
-            channel.groupTitle, channel.isSports ? 1 : 0, channel.language, source.url, timestamp
-          );
+          if (this.channelTvgIdReady) {
+            this.sql.exec(
+              "INSERT INTO channels (id, identifier, tvg_id, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
+              "tvg_id = CASE WHEN excluded.tvg_id != '' THEN excluded.tvg_id ELSE channels.tvg_id END, " +
+              "name = excluded.name, identifier = excluded.identifier, logo_url = excluded.logo_url, " +
+              "group_title = excluded.group_title, is_sports = excluded.is_sports, " +
+              "language = CASE WHEN excluded.language != 'unknown' THEN excluded.language ELSE channels.language END, " +
+              "updated_at = excluded.updated_at WHERE " +
+              "channels.name != excluded.name OR channels.identifier != excluded.identifier OR " +
+              "channels.logo_url != excluded.logo_url OR channels.group_title != excluded.group_title OR " +
+              "channels.is_sports != excluded.is_sports OR " +
+              "(excluded.tvg_id != '' AND channels.tvg_id != excluded.tvg_id) OR " +
+              "(excluded.language != 'unknown' AND channels.language != excluded.language)",
+              identifier, identifier, channel.tvgId || "", channel.name, channel.url,
+              channel.logoUrl, channel.groupTitle, channel.isSports ? 1 : 0,
+              channel.language, source.url, timestamp
+            );
+          } else {
+            this.sql.exec(
+              "INSERT INTO channels (id, identifier, name, stream_url, logo_url, group_title, is_sports, language, visible, source_url, updated_at) " +
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT(stream_url) DO UPDATE SET " +
+              "name = excluded.name, identifier = excluded.identifier, logo_url = excluded.logo_url, " +
+              "group_title = excluded.group_title, is_sports = excluded.is_sports, " +
+              "language = CASE WHEN excluded.language != 'unknown' THEN excluded.language ELSE channels.language END, " +
+              "updated_at = excluded.updated_at WHERE " +
+              "channels.name != excluded.name OR channels.identifier != excluded.identifier OR " +
+              "channels.logo_url != excluded.logo_url OR channels.group_title != excluded.group_title OR " +
+              "channels.is_sports != excluded.is_sports OR " +
+              "(excluded.language != 'unknown' AND channels.language != excluded.language)",
+              identifier, identifier, channel.name, channel.url, channel.logoUrl,
+              channel.groupTitle, channel.isSports ? 1 : 0, channel.language, source.url, timestamp
+            );
+          }
           sourceImported += 1;
         }
 
