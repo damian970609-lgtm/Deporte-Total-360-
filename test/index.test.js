@@ -1668,18 +1668,17 @@ test("importa CSV y XML ASX además de M3U, PLS, XSPF, JSON y TXT", () => {
 });
 
 test("la importación M3U conserva tvg-id original para enlazar programas XMLTV", () => {
-  const result = parsePlaylist(
-    '#EXTM3U\\n' +
-    '#EXTINF:-1 tvg-id="ESPN2.us" tvg-name="ESPN 2 HD" group-title="Sports",ESPN 2 HD\\n' +
-    'https://media.example/espn2.m3u8\\n',
-    "https://lists.example/sports.m3u"
-  );
+  const playlist = [
+    "#EXTM3U",
+    '#EXTINF:-1 tvg-id="ESPN2.us" tvg-name="ESPN 2 HD" group-title="Sports",ESPN 2 HD',
+    "https://media.example/espn2.m3u8"
+  ].join("\n");
+  const result = parsePlaylist(playlist, "https://lists.example/sports.m3u");
   assert.equal(result.format, "m3u");
   assert.equal(result.channels.length, 1);
   assert.equal(result.channels[0].tvgId, "ESPN2.us");
   assert.equal(result.channels[0].name, "ESPN 2 HD");
 });
-
 test("lee listas PLS, XSPF/XML, JSON y TXT y extrae URLs reproducibles", () => {
   const base = "https://lists.example/source.txt";
 
