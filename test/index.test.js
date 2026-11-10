@@ -1195,6 +1195,42 @@ test("el catálogo público reenvía búsqueda, offset y tamaño de página", as
 
 
 
+test("el catálogo privado reenvía el tamaño de página de IPTV hasta 2000", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    iss: "https://accounts.google.com",
+    aud: "dt360-client.apps.googleusercontent.com",
+    exp: String(Math.floor(Date.now() / 1000) + 3600),
+    email: "damian970609@gmail.com",
+    email_verified: true,
+    sub: "owner-google-sub"
+  }), { status: 200 });
+
+  let capturedUrl;
+  const env = {
+    GOOGLE_OAUTH_CLIENT_ID: "dt360-client.apps.googleusercontent.com",
+    CHANNELS_ADMIN_EMAIL: "damian970609@gmail.com",
+    CHANNEL_CATALOG: {
+      idFromName: name => name,
+      get: () => ({
+        async fetch(internalRequest) {
+          capturedUrl = new URL(internalRequest.url);
+          return new Response(JSON.stringify({ channels: [], offset: 2000, hasMore: false }), {
+            status: 200, headers: { "Content-Type": "application/json" }
+          });
+        }
+      })
+    }
+  };
+  const response = await worker.fetch(new Request(
+    "https://worker.example/api/channels/admin/catalog?offset=2000&limit=2000",
+    { headers: { Authorization: "Bearer owner-token" } }
+  ), env);
+  assert.equal(response.status, 200);
+  assert.equal(capturedUrl.searchParams.get("scope"), "admin");
+  assert.equal(capturedUrl.searchParams.get("offset"), "2000");
+  assert.equal(capturedUrl.searchParams.get("limit"), "2000");
+});
+
 test("la licencia de la app se comprueba contra el catálogo usando el correo verificado", async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     iss: "https://accounts.google.com",
