@@ -821,6 +821,44 @@ test("proxy SportsAPI.app usa Bearer y conserva el sobre data/meta", async () =>
   assert.equal(body.data[0].id, 123);
 });
 
+test("proxy SportsAPI usa TTL diferenciados según la fecha local de Guyana", async () => {
+  const dateInGuyana = (offsetDays = 0) => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Guyana",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
+    const part = type => parts.find(item => item.type === type)?.value;
+    const localDate = new Date(Date.UTC(
+      Number(part("year")),
+      Number(part("month")) - 1,
+      Number(part("day")) + offsetDays
+    ));
+    return localDate.toISOString().slice(0, 10);
+  };
+
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    data: [],
+    meta: { count: 0, hasNextPage: false }
+  }), { status: 200 });
+
+  const cases = [
+    { date: dateInGuyana(-1), ttl: 21600 },
+    { date: dateInGuyana(0), ttl: 180 },
+    { date: dateInGuyana(1), ttl: 900 }
+  ];
+
+  for (const item of cases) {
+    const response = await worker.fetch(
+      request("/api/sportsapi/fixtures?date=" + item.date + "&sport=football&page=0"),
+      { SPORTAPI_API_KEY: "sportsapi-test-secret" }
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Cache-Control"), "public, max-age=" + item.ttl);
+  }
+});
+
 test("proxy SportsAPI.app valida el deporte antes de llamar al proveedor", async () => {
   let called = false;
   globalThis.fetch = async () => {
