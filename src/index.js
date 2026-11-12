@@ -1379,13 +1379,18 @@ async function sportsApiProxy(request,env,route) {
     try { parsed=JSON.parse(body); } catch { return json({error:{code:"invalid_upstream_response",message:"SportsAPI devolvió una respuesta no JSON."}},502); }
     if(!upstream.ok) { const retry=upstream.headers.get("Retry-After"); return json(parsed,upstream.status,{"Cache-Control":"no-store",...(retry?{"Retry-After":retry}:{})}); }
     const requestDate = incoming.searchParams.get("date");
-    const todayUtc = new Date().toISOString().slice(0, 10);
-    // El calendario del día es una captura diaria: el cron de las 08:00
-    // de Guyana lo precalienta y la APK lo conserva localmente. Para cambiar
-    // horarios o marcadores antes del cierre, el usuario puede forzar refresh.
-    const dateTtl = requestDate && requestDate < todayUtc
-      ? 21600
-      : requestDate === todayUtc ? 43200 : 43200;
+    const todayGuyana = guyanaLocalDate();
+    // Los partidos de hoy deben reflejar cambios de estado durante la jornada.
+    // Las fechas futuras son más estables; las pasadas pueden usar caché larga.
+    // Usamos el día local de Guyana para que el cambio de fecha no se adelante
+    // ni se retrase cuatro horas respecto a la zona horaria de la aplicación.
+    const dateTtl = !requestDate
+      ? 120
+      : requestDate < todayGuyana
+          ? 21600
+          : requestDate === todayGuyana
+              ? 180
+              : 900;
     const isFixtureStatistics = route.upstream.endsWith("/statistics");
     const isStandings = route.upstream.endsWith("/standings");
     const ttl = route.upstream==="sports"||route.upstream==="categories"||route.upstream==="leagues"||route.upstream==="series"
