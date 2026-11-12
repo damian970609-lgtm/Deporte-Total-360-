@@ -33,7 +33,7 @@ const MAX_PLAYLIST_BYTES = 25 * 1024 * 1024;
 // descontroladas de listas globales de decenas de miles de entradas.
 const MAX_PARSED_PLAYLIST_CHANNELS = 50000;
 const MAX_IMPORTED_CHANNELS = 50000;
-const MAX_SOURCE_COUNT = 100;
+const MAX_SOURCE_COUNT = 120;
 const MAX_CHANNEL_CATALOG_OFFSET = 5000000;
 const IMPORT_CHANNEL_BATCH_SIZE = 500;
 const REFRESH_BATCH_SIZE = 2;
@@ -858,7 +858,7 @@ export async function handleChannelRoutes(request, env, path) {
     if (!Array.isArray(payload && payload.sources) ||
         payload.sources.length === 0 || payload.sources.length > MAX_SOURCE_COUNT) {
       return response({
-        error: "Envía entre 1 y 100 listas en el lote."
+        error: "Envía entre 1 y 120 listas en el lote."
       }, 400);
     }
     const sources = [];
@@ -1429,7 +1429,7 @@ export class ChannelCatalogRoom {
       const total = Number(totalRows && totalRows.total || 0);
       if (!existing && total >= MAX_SOURCE_COUNT) {
         return response({
-          error: "El catálogo ya tiene sus 100 listas. Quita una fuente antes de añadir otra.",
+          error: "El catálogo ya tiene sus 120 listas. Quita una fuente antes de añadir otra.",
           count: total,
           limit: MAX_SOURCE_COUNT
         }, 409);
@@ -1451,7 +1451,7 @@ export class ChannelCatalogRoom {
       }
       const batch = Array.isArray(payload && payload.sources) ? payload.sources : [];
       if (batch.length === 0 || batch.length > MAX_SOURCE_COUNT) {
-        return response({ error: "El lote debe contener entre 1 y 100 listas." }, 400);
+        return response({ error: "El lote debe contener entre 1 y 120 listas." }, 400);
       }
       let total = Number(Array.from(this.sql.exec(
         "SELECT COUNT(*) AS total FROM sources"

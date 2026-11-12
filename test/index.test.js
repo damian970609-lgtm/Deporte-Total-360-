@@ -1558,7 +1558,7 @@ test("el panel admin puede eliminar un canal y rechaza cuentas que no son propie
 
 
 
-test("el administrador puede enviar un lote para completar exactamente 100 listas", async () => {
+test("el administrador puede enviar un lote para completar hasta 120 listas", async () => {
   const previousFetch = globalThis.fetch;
   const forwarded = [];
   globalThis.fetch = async (input) => {
@@ -1588,11 +1588,11 @@ test("el administrador puede enviar un lote para completar exactamente 100 lista
               body: await internalRequest.json()
             });
             return new Response(JSON.stringify({
-              added: 94,
+              added: 114,
               duplicates: 6,
               skipped: 0,
-              total: 100,
-              limit: 100,
+              total: 120,
+              limit: 120,
               complete: true
             }), { status: 202, headers: { "Content-Type": "application/json" } });
           }
@@ -1619,7 +1619,7 @@ test("el administrador puede enviar un lote para completar exactamente 100 lista
       bulkRequest, env, new URL(bulkRequest.url).pathname
     );
     assert.equal(result.status, 202);
-    assert.equal((await result.json()).total, 100);
+    assert.equal((await result.json()).total, 120);
     assert.equal(forwarded.length, 1);
     assert.equal(forwarded[0].method, "POST");
     assert.equal(forwarded[0].path, "/sources/bulk");
