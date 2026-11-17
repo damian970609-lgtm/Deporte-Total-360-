@@ -496,13 +496,14 @@ export function parsePlaylist(text, sourceUrl) {
   if (/^\[playlist\]/i.test(normalized)) {
     return { format: "pls", channels: parsePls(normalized, sourceUrl) };
   }
-  if (/^<\?xml|^<(?:playlist|asx|smil|wpl|tv|mpd|root|channels|streams)\b/i.test(normalized)) {
+  if (/^<\?(?:xml|wpl)|^<(?:playlist|asx|smil|wpl|tv|mpd|root|channels|streams)\b/i.test(normalized)) {
     const xspf = parseXspf(normalized, sourceUrl);
     const xml = parseGenericXmlPlaylist(normalized, sourceUrl);
     const selfClosing = parseXmlSelfClosingMediaNodes(normalized, sourceUrl);
     const channels = mergePlaylistChannels(xspf, xml, selfClosing);
-    const format = xspf.length ? "xspf" : (/^<smil\b/i.test(normalized) ? "smil" :
-      (/^<wpl\b/i.test(normalized) ? "wpl" : "xml"));
+    const format = xspf.length ? "xspf" :
+      (/^<\?wpl\b|^<wpl\b/i.test(normalized) ? "wpl" :
+        (/^<smil\b/i.test(normalized) ? "smil" : "xml"));
     return { format, channels };
   }
   if (normalized.startsWith("{") || normalized.startsWith("[")) {
