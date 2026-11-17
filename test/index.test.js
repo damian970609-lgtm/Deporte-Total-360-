@@ -1731,7 +1731,7 @@ test("no importa como señal un archivo de lista o un recurso web", () => {
     "https://media.example/watch?id=22",
     "#EXTINF:-1,Una señal directa sin extensión",
     "https://media.example/live/12345?token=abc"
-  ].join("\\n");
+  ].join("\n");
   const result = parsePlaylist(playlist, "https://lists.example/channels.m3u");
   assert.deepEqual(result.channels.map(channel => channel.url), [
     "https://media.example/live/12345?token=abc"
