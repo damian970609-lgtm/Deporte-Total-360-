@@ -513,7 +513,7 @@ export function parsePlaylist(text, sourceUrl) {
     const channels = mergePlaylistChannels(xspf, xml, selfClosing);
     const format = xspf.length ? "xspf" :
       (/^<\?wpl\b|^<wpl\b/i.test(normalized) ? "wpl" :
-        (/^<smil\b/i.test(normalized) ? "smil" : "xml"));
+        (/<smil\b/i.test(normalized) ? "smil" : "xml"));
     return { format, channels };
   }
   if (normalized.startsWith("{") || normalized.startsWith("[")) {
