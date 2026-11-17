@@ -172,7 +172,7 @@ Rutas:
 - `GET /api/channels`: catálogo público visible.
 - `GET/PUT /api/channels/favorites`: favoritos privados por identidad Google.
 - `GET /api/channels/admin/catalog?q=...`: catálogo de administración.
-- `GET/POST /api/channels/admin/sources`: ver y registrar listas M3U.
+- `GET/POST /api/channels/admin/sources`: ver y registrar listas IPTV M3U/M3U8, PLS, XSPF, XML/ASX, WPL/SMIL, JSON, CSV y TXT.
 - `POST /api/channels/admin/refresh`: iniciar importación/actualización.
 - `PATCH /api/channels/admin/channels/{id}/visibility`: publicar u ocultar.
 
@@ -186,8 +186,11 @@ Android con el package name y SHA-1 del certificado de firma de la APK.
 
 Las listas añadidas empiezan ocultas. El nombre/grupo se utiliza para sugerir
 la categoría deportiva; el administrador debe confirmar que puede distribuir
-cada señal antes de publicarla. Solo se aceptan listas M3U HTTPS y flujos
-HTTPS directos HLS (.m3u8), MP4 o MPEG-TS (.ts). No se extraen reproductores web, ni se
+cada señal antes de publicarla. Se aceptan listas HTTPS M3U/M3U8, PLS, XSPF,
+XML/ASX, WPL/SMIL, JSON, CSV y TXT. El parser reconoce señales directas HTTPS
+HLS (.m3u8), DASH (.mpd), Smooth Streaming, contenedores progresivos como MP4,
+M4A, FMP4, WebM, Matroska, MP3, Ogg, WAV, MPEG-TS, FLV, AAC, FLAC y AMR, además
+de endpoints directos sin extensión o con formato declarado en parámetros. No se extraen reproductores web, ni se
 eluden DRM, suscripciones, credenciales o geobloqueos. Las fuentes con redirección
 deben registrarse con su URL final. Tamaño máximo por lista: 4 MB.
 
