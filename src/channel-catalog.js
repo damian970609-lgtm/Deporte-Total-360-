@@ -99,13 +99,42 @@ function validStreamUrl(value, baseUrl) {
   try {
     const url = new URL(String(value || "").trim(), baseUrl);
     const path = url.pathname.toLowerCase();
-    const supported = [
-      ".m3u8", ".mpd", ".mp4", ".m4v", ".mov", ".mkv",
-      ".webm", ".ts", ".mpeg", ".mpg", ".flv", ".m2ts", ".2ts", ".mts",
-    ].some(extension => path.endsWith(extension)) ||
-      path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest");
-    return url.protocol === "https:" && !url.username && !url.password &&
-      supported;
+    if (url.protocol !== "https:" || url.username || url.password) return false;
+
+    const adaptiveHint = Array.from(url.searchParams.entries())
+      .filter(([key]) => /^(format|type|output|ext|extension|streamtype|stream_type|container|protocol|manifest)$/i.test(key))
+      .map(([, value]) => value.toLowerCase())
+      .join(" ");
+    if (path.endsWith(".m3u8") || /m3u8|hls/.test(adaptiveHint) ||
+        path.endsWith(".mpd") || /mpd|dash/.test(adaptiveHint) ||
+        path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest") ||
+        /smoothstream|smooth-stream|isml/.test(adaptiveHint)) {
+      return true;
+    }
+
+    const progressiveExtensions = [
+      ".mp4", ".m4v", ".m4a", ".m4b", ".fmp4", ".mov", ".mkv",
+      ".webm", ".mp3", ".mp2", ".ogg", ".oga", ".opus", ".wav",
+      ".aac", ".flac", ".amr", ".ts", ".mpeg", ".mpg", ".vob",
+      ".flv", ".m2ts", ".2ts", ".mts",
+    ];
+    if (progressiveExtensions.some(extension => path.endsWith(extension))) return true;
+
+    const blockedExtensions = [
+      ".m3u", ".pls", ".xspf", ".wpl", ".smil", ".asx", ".xml",
+      ".json", ".csv", ".txt", ".html", ".htm", ".jpg", ".jpeg",
+      ".png", ".gif", ".webp", ".svg", ".css", ".js", ".pdf", ".zip",
+    ];
+    const lastSegment = path.split("/").filter(Boolean).at(-1) || "";
+    const extensionMatch = lastSegment.match(/\.[a-z0-9]{1,10}$/i);
+    const extension = extensionMatch ? extensionMatch[0].toLowerCase() : "";
+    if (extension && blockedExtensions.includes(extension)) return false;
+
+    // Algunos proveedores autorizados publican señales directamente en
+    // /live/ID o en endpoints dinámicos como /stream.php sin extensión.
+    return !extension || [
+      ".php", ".asp", ".aspx", ".ashx", ".cgi", ".do", ".action",
+    ].includes(extension);
   } catch {
     return false;
   }
@@ -264,7 +293,10 @@ function parseJsonPlaylist(text, sourceUrl) {
   }
   const channels = [];
   const visited = new Set();
-  const nestedKeys = ["channels", "streams", "items", "results", "data", "playlist", "entries"];
+  const nestedKeys = [
+    "channels", "streams", "items", "results", "data", "playlist",
+    "entries", "groups", "categories", "stations",
+  ];
   const visit = (value, depth = 0) => {
     if (!value || depth > 6 || channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) return;
     if (Array.isArray(value)) {
@@ -281,14 +313,17 @@ function parseJsonPlaylist(text, sourceUrl) {
       }
       return "";
     };
-    const url = pick(["url", "stream_url", "streamUrl", "src", "link", "file", "direct_source"]);
+    const url = pick([
+      "url", "stream_url", "streamUrl", "streamURL", "media_url", "mediaUrl",
+      "playUrl", "play_url", "src", "link", "directLink", "direct_source", "file",
+    ]);
     if (url) {
       const channel = channelFromPlaylistEntry(
-        pick(["name", "title", "channel", "tvg_name", "tvg-name"]),
+        pick(["name", "title", "channel", "channelName", "displayName", "tvg_name", "tvg-name"]),
         url,
         sourceUrl,
-        pick(["groupTitle", "group_title", "group", "category", "genre"]),
-        pick(["logoUrl", "logo", "tvg_logo", "tvg-logo"])
+        pick(["groupTitle", "group_title", "group", "group_name", "category", "categoryName", "genre"]),
+        pick(["logoUrl", "logo_url", "logo", "tvg_logo", "tvg-logo"])
       );
       if (channel) channels.push(channel);
     }
@@ -348,6 +383,41 @@ function parseCsvPlaylist(text, sourceUrl) {
     if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
   }
   return channels;
+}
+
+function parseXmlSelfClosingMediaNodes(text, sourceUrl) {
+  const channels = [];
+  const nodes = /<(?:media|video|audio|ref)\b([^>]*?)\/>/gi;
+  for (const match of text.matchAll(nodes)) {
+    const attributes = match[1] || "";
+    const attr = names => {
+      for (const name of names) {
+        const found = attributes.match(new RegExp(
+          "(?:^|\\s)" + name + "\\s*=\\s*(['\\\"])([\\s\\S]*?)\\1",
+          "i"
+        ));
+        if (found) return decodeXmlEntities(found[2]);
+      }
+      return "";
+    };
+    const streamUrl = attr(["src", "url", "href", "file", "location"]);
+    if (!streamUrl) continue;
+    const name = attr(["title", "name", "label", "id"]);
+    const group = attr(["group", "group-title", "category", "genre"]);
+    const logo = attr(["logo", "tvg-logo", "image"]);
+    const channel = channelFromPlaylistEntry(name, streamUrl, sourceUrl, group, logo);
+    if (channel) channels.push(channel);
+    if (channels.length >= MAX_PARSED_PLAYLIST_CHANNELS) break;
+  }
+  return channels;
+}
+
+function mergePlaylistChannels(...groups) {
+  const byUrl = new Map();
+  for (const channel of groups.flat()) {
+    if (channel && channel.url && !byUrl.has(channel.url)) byUrl.set(channel.url, channel);
+  }
+  return Array.from(byUrl.values()).slice(0, MAX_PARSED_PLAYLIST_CHANNELS);
 }
 
 function parseGenericXmlPlaylist(text, sourceUrl) {
@@ -426,10 +496,14 @@ export function parsePlaylist(text, sourceUrl) {
   if (/^\[playlist\]/i.test(normalized)) {
     return { format: "pls", channels: parsePls(normalized, sourceUrl) };
   }
-  if (/^<\?xml|^<(?:playlist|asx|tv|mpd|root|channels|streams)\b/i.test(normalized)) {
+  if (/^<\?xml|^<(?:playlist|asx|smil|wpl|tv|mpd|root|channels|streams)\b/i.test(normalized)) {
     const xspf = parseXspf(normalized, sourceUrl);
-    const channels = xspf.length ? xspf : parseGenericXmlPlaylist(normalized, sourceUrl);
-    return { format: xspf.length ? "xspf" : "xml", channels };
+    const xml = parseGenericXmlPlaylist(normalized, sourceUrl);
+    const selfClosing = parseXmlSelfClosingMediaNodes(normalized, sourceUrl);
+    const channels = mergePlaylistChannels(xspf, xml, selfClosing);
+    const format = xspf.length ? "xspf" : (/^<smil\b/i.test(normalized) ? "smil" :
+      (/^<wpl\b/i.test(normalized) ? "wpl" : "xml"));
+    return { format, channels };
   }
   if (normalized.startsWith("{") || normalized.startsWith("[")) {
     return { format: "json", channels: parseJsonPlaylist(normalized, sourceUrl) };
