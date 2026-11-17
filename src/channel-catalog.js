@@ -131,10 +131,20 @@ function validStreamUrl(value, baseUrl) {
     if (extension && blockedExtensions.includes(extension)) return false;
 
     // Algunos proveedores autorizados publican señales directamente en
-    // /live/ID o en endpoints dinámicos como /stream.php sin extensión.
-    return !extension || [
+    // /live/ID o en endpoints dinámicos sin extensión. No aceptar páginas
+    // genéricas como /watch, /player o /embed.
+    const dynamicEndpoint = [
       ".php", ".asp", ".aspx", ".ashx", ".cgi", ".do", ".action",
     ].includes(extension);
+    const directRouteSegments = new Set([
+      "live", "stream", "channel", "hls", "dash", "vod", "video",
+    ]);
+    const pathSegments = path.split("/").filter(Boolean);
+    const hasKnownDirectRoute = pathSegments.length === 1
+      ? directRouteSegments.has(pathSegments.at(-1).toLowerCase())
+      : pathSegments.length >= 2 &&
+        directRouteSegments.has(pathSegments.at(-2).toLowerCase());
+    return dynamicEndpoint || (!extension && hasKnownDirectRoute);
   } catch {
     return false;
   }
