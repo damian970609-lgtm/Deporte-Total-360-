@@ -1667,6 +1667,71 @@ test("importa CSV y XML ASX además de M3U, PLS, XSPF, JSON y TXT", () => {
   assert.equal(xml.channels[0].isSports, 1);
 });
 
+test("acepta contenedores multimedia progresivos y endpoints directos sin extensión", () => {
+  const extensions = [
+    "mp4", "m4v", "m4a", "m4b", "fmp4", "mov", "mkv", "webm",
+    "mp3", "mp2", "ogg", "oga", "opus", "wav", "aac", "flac",
+    "amr", "ts", "mpeg", "mpg", "vob", "flv", "m2ts", "2ts", "mts"
+  ];
+  for (const extension of extensions) {
+    const playlist = [
+      "#EXTM3U",
+      "#EXTINF:-1,Canal " + extension,
+      "https://media.example/live." + extension + "?token=abc"
+    ].join("\\n");
+    const result = parsePlaylist(playlist, "https://lists.example/channels.m3u");
+    assert.equal(result.channels.length, 1, extension);
+  }
+
+  const extensionless = parsePlaylist(
+    "#EXTM3U\\n#EXTINF:-1,Canal dinámico\\nhttps://media.example/live/12345?token=abc",
+    "https://lists.example/channels.m3u"
+  );
+  assert.equal(extensionless.channels.length, 1);
+
+  const adaptiveEndpoints = [
+    "https://media.example/live.php?type=m3u8&token=abc",
+    "https://media.example/play?id=9&format=mpd",
+    "https://media.example/channel.php?protocol=smoothstream"
+  ];
+  for (const url of adaptiveEndpoints) {
+    const result = parsePlaylist("#EXTM3U\\n#EXTINF:-1,Canal\\n" + url,
+      "https://lists.example/channels.m3u");
+    assert.equal(result.channels.length, 1, url);
+  }
+});
+
+test("importa listas XML WPL y SMIL con elementos media auto-cerrados", () => {
+  const smil = parsePlaylist(
+    '<?xml version="1.0"?><smil><body><seq><video src="https://media.example/live.m3u8" title="Canal SMIL"/></seq></body></smil>',
+    "https://lists.example/channels.smil"
+  );
+  assert.equal(smil.format, "smil");
+  assert.equal(smil.channels.length, 1);
+  assert.equal(smil.channels[0].name, "Canal SMIL");
+
+  const wpl = parsePlaylist(
+    '<?wpl version="1.0"?><smil><body><seq><media src="https://media.example/channel.mp4" title="Canal WPL" /></seq></body></smil>',
+    "https://lists.example/channels.wpl"
+  );
+  assert.equal(wpl.channels.length, 1);
+  assert.equal(wpl.channels[0].url, "https://media.example/channel.mp4");
+});
+
+test("no importa como señal un archivo de lista o un recurso web", () => {
+  const playlist = [
+    "#EXTM3U",
+    "#EXTINF:-1,Lista anidada",
+    "https://media.example/nested.m3u",
+    "#EXTINF:-1,Una página web",
+    "https://media.example/watch.html",
+    "#EXTINF:-1,Una imagen",
+    "https://media.example/logo.png"
+  ].join("\\n");
+  const result = parsePlaylist(playlist, "https://lists.example/channels.m3u");
+  assert.deepEqual(result.channels, []);
+});
+
 test("la importación M3U conserva tvg-id original para enlazar programas XMLTV", () => {
   const playlist = [
     "#EXTM3U",
