@@ -1678,13 +1678,13 @@ test("acepta contenedores multimedia progresivos y endpoints directos sin extens
       "#EXTM3U",
       "#EXTINF:-1,Canal " + extension,
       "https://media.example/live." + extension + "?token=abc"
-    ].join("\\n");
+    ].join("\n");
     const result = parsePlaylist(playlist, "https://lists.example/channels.m3u");
     assert.equal(result.channels.length, 1, extension);
   }
 
   const extensionless = parsePlaylist(
-    "#EXTM3U\\n#EXTINF:-1,Canal dinámico\\nhttps://media.example/live/12345?token=abc",
+    "#EXTM3U\n#EXTINF:-1,Canal dinámico\nhttps://media.example/live/12345?token=abc",
     "https://lists.example/channels.m3u"
   );
   assert.equal(extensionless.channels.length, 1);
@@ -1695,7 +1695,7 @@ test("acepta contenedores multimedia progresivos y endpoints directos sin extens
     "https://media.example/channel.php?protocol=smoothstream"
   ];
   for (const url of adaptiveEndpoints) {
-    const result = parsePlaylist("#EXTM3U\\n#EXTINF:-1,Canal\\n" + url,
+    const result = parsePlaylist("#EXTM3U\n#EXTINF:-1,Canal\n" + url,
       "https://lists.example/channels.m3u");
     assert.equal(result.channels.length, 1, url);
   }
